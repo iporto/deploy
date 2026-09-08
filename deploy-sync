@@ -34,6 +34,21 @@ VERBOSE=false
 
 SSH_CONTROL_SOCKET=""
 
+# Resolve o diretório canônico desta biblioteca (funciona com symlinks, macOS).
+# Necessário para push_deploy_run(): o deploy-run tem de ser lido da cópia
+# canônica, não do symlink dentro do projeto.
+_scripts_dir() {
+  local src="${BASH_SOURCE[0]}"
+  while [[ -L "$src" ]]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="${dir}/${src}"
+  done
+  cd -P "$(dirname "$src")" && pwd
+}
+SCRIPTS_DIR="$(_scripts_dir)"
+
 # Lista de fallback: usada apenas quando o projeto NÃO tem .rsyncignore.
 # Projetos com o arquivo controlam as exclusões por lá.
 # Usado só quando o projeto NÃO tem .rsyncignore. Na prática esta lista é o que
@@ -63,17 +78,20 @@ EXCLUDE_PATTERNS=(
   #    exclusão o --delete os APAGA na VM e os containers ficam sem o arquivo.
   ".envs/*.env"
 
-  # Symlinks para Deploy-Scripts/. O alvo não existe na VM: sincronizá-los só
-  # planta links quebrados lá.
+  # Symlinks para a biblioteca de scripts, que vive num repositório próprio fora
+  # deste projeto. Sincronizá-los só planta links quebrados na VM.
   #
-  # ⚠️ deploy-run FICA FORA desta lista de propósito — ver o comentário do -L
-  #    em sync_files(). Ele roda NA VM (modo local e o modo remoto via SSH) e
-  #    por isso precisa ser entregue e mantido atualizado lá.
+  # ⚠️ deploy-run TAMBÉM está excluído, mas ele PRECISA existir na VM — roda lá
+  #    no modo local e no "./deploy-run" que o execute_post_sync dispara por SSH.
+  #    A entrega é feita por push_deploy_run(), logo após o rsync. Antes ela
+  #    dependia de o rsync -L desreferenciar o symlink; com o shim de bootstrap
+  #    o -L passaria a copiar o próprio shim, que não resolve nada dentro da VM.
   "deploy"
   "deploy-audit"
   "deploy-backup"
   "deploy-promote"
   "deploy-readme.md"
+  "deploy-run"
   "deploy-sync"
   "deploy-token-check"
   "envedit"
@@ -350,10 +368,10 @@ sync_files() {
   # -r recursive  -L dereferencia symlinks (copia o conteúdo real, não o link)
   # -t timestamps  -g group  -o owner  -D devices  -z compress  -O omit dir times
   #
-  # -L é essencial para os symlinks deploy/deploy-run/deploy-backup/deploy-sync:
-  # eles apontam para fora do projeto (o diretório dos scripts) e não existem
-  # no servidor remoto. Com -l (padrão do -a) o symlink quebrado seria copiado como
-  # está; com -L o rsync segue o link e envia o script real.
+  # -L desreferencia symlinks (copia o conteúdo real, não o link). Os symlinks
+  # da biblioteca de deploy estão todos excluídos e não dependem mais disto — o
+  # deploy-run é entregue por push_deploy_run(). O -L permanece para qualquer
+  # outro symlink do projeto que aponte para fora dele.
   local rsync_opts=(-rLtgoDzO --delete --itemize-changes)
 
   if [[ "$VERBOSE" == true ]]; then
@@ -450,6 +468,40 @@ _resolve_age_key() {
 }
 
 # Decripta e envia os envs para a VM via stdin do SSH (sem arquivo temporário).
+################################################################################
+# Entrega do deploy-run
+#
+# O deploy-run é o único script da biblioteca que precisa existir DENTRO da VM:
+# o modo local roda lá e o execute_post_sync dispara "./deploy-run" por SSH.
+#
+# Ele não viaja pelo rsync. No projeto, ./deploy-run é um symlink para o shim de
+# bootstrap, e o rsync -L copiaria o shim — que depende de DEPLOY_SCRIPTS_HOME e
+# não resolveria nada na VM. Por isso o arquivo é entregue aqui, a partir da
+# cópia canônica, pela conexão SSH já aberta: o mesmo padrão dos envs decriptados.
+################################################################################
+push_deploy_run() {
+  local ssh_cmd="$1" host="$2" remote_path="$3"
+  local src="${SCRIPTS_DIR}/deploy-run"
+
+  if [[ ! -f "$src" ]]; then
+    print_error "deploy-run não encontrado em ${SCRIPTS_DIR}"
+    print_error "A biblioteca de scripts está incompleta ou o caminho é inválido."
+    return 1
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_info "Seria entregue: ${src} → ${remote_path}/deploy-run"
+    return 0
+  fi
+
+  print_info "Entregando deploy-run na VM..."
+  if ! $ssh_cmd "$host" "cat > '${remote_path}/deploy-run' && chmod 755 '${remote_path}/deploy-run'" < "$src"; then
+    print_error "Falha ao entregar o deploy-run"
+    return 1
+  fi
+  print_success "deploy-run atualizado na VM (755)"
+}
+
 _push_sops_envs() {
   local ssh_cmd="$1" host="$2" remote_path="$3"
   local flags=(--input-type dotenv --output-type dotenv)
@@ -698,6 +750,7 @@ main() {
   check_ssh_connectivity "$SSH_CMD" "$REMOTE_HOST" || exit 1
   check_or_create_remote_directory "$SSH_CMD" "$REMOTE_HOST" "$REMOTE_BASE_PATH" || exit 1
   sync_files "$SSH_CMD" "$REMOTE_HOST" "$LOCAL_DIR" "$REMOTE_BASE_PATH" || exit 1
+  push_deploy_run "$SSH_CMD" "$REMOTE_HOST" "$REMOTE_BASE_PATH" || exit 1
   apply_permissions "$SSH_CMD" "$REMOTE_HOST" "$REMOTE_BASE_PATH"
   copy_env_file "$SSH_CMD" "$REMOTE_HOST" "$REMOTE_BASE_PATH" || exit 1
   execute_post_sync "$SSH_CMD" "$REMOTE_HOST"
