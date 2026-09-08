@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+################################################################################
+# Script de Deploy Multi-Servidor
+# Lê servers.yml e chama deploy-sync para cada servidor definido.
+#
+# Sem servers.yml: chama deploy-sync diretamente (backward compatible).
+#
+# Uso: ./deploy [AMBIENTE] [SERVIDOR] [FLAGS]
+################################################################################
+
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly CYAN='\033[0;36m'
+readonly NC='\033[0m'
+
+ENV_TARGET=""
+SERVER_FILTER=""
+DRY_RUN=false
+VERBOSE=false
+SKIP_EXEC=false
+SKIP_PERMS=false
+SKIP_ENV=false
+ONLY_SERVICES=""
+SYNC_ONLY=false
+
+# Resolve o diretório canônico deste script (funciona com symlinks, macOS)
+_scripts_dir() {
+  local src="${BASH_SOURCE[0]}"
+  while [[ -L "$src" ]]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="${dir}/${src}"
+  done
+  cd -P "$(dirname "$src")" && pwd
+}
+SCRIPTS_DIR="$(_scripts_dir)"
+SYNC_SERVER="${SCRIPTS_DIR}/deploy-sync"
+
+################################################################################
+# Utilidade
+################################################################################
+
+print_error()   { echo -e "${RED}[ERRO]${NC} $*" >&2; }
+print_success() { echo -e "${GREEN}[OK]${NC} $*"; }
+print_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
+print_warning() { echo -e "${YELLOW}[AVISO]${NC} $*"; }
+print_header()  { echo -e "\n${BLUE}===${NC} $* ${BLUE}===${NC}"; }
+print_step()    { echo -e "${CYAN}[>>]${NC} $*"; }
+
+show_usage() {
+  cat << EOF
+Uso: $(basename "$0") [AMBIENTE] [SERVIDOR] [OPÇÕES]
+
+Sincroniza um ou todos os servidores definidos em servers.yml do projeto.
+Sem servers.yml, equivale a chamar deploy-sync diretamente.
+
+AMBIENTE:
+  dev, prd, stg    Ambiente alvo
+
+SERVIDOR:
+  <nome>           (opcional) Nome do servidor em servers.yml.
+                   Omitir = todos os servidores do ambiente.
+
+OPÇÕES:
+  -n               Dry-run (simula sem executar)
+  -v               Verbose (rsync com progresso detalhado)
+  -r               Pula execução de pós-sync (deploy-run)
+  -p               Pula aplicação de permissões
+  -e               Pula cópia do .env remoto
+  --only LISTA     Reinicia só estes serviços, em vez de recriar todos os
+                   containers. Use para mudança de CONFIG (env, php.ini, nginx).
+                   Para imagem nova, o caminho é promover a tag.
+                   Ex.: --only "php supervisor"   |   --only app
+  --sync-only      Entrega arquivos e envs e para, sem tocar em container.
+  --help           Exibe esta ajuda
+
+EXEMPLOS:
+  ./deploy prd               Todos os servidores PRD
+  ./deploy prd main          Só o servidor 'main'
+  ./deploy prd -n            Dry-run de todos os PRD
+  ./deploy prd redis -v      Servidor redis com verbose
+  ./deploy dev -r            Dev sem executar deploy-run
+
+ARQUIVO servers.yml (no diretório do projeto):
+  servers:
+    prd:
+      - name: main
+        label: VM Principal
+        env_file: .env.prd
+      - name: redis
+        label: VM Redis
+        env_file: .docker-stand-alone/Database/Redis/.env.prd
+
+  Se não existir, este script passa os argumentos diretamente ao deploy-sync.
+
+EOF
+}
+
+################################################################################
+# Argumentos
+################################################################################
+
+parse_arguments() {
+  # Opções longas: getopts não lida com elas. Extrai antes e repassa o resto.
+  local -a _rest=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --only)      [[ $# -lt 2 ]] && { print_error "--only exige um valor"; exit 1; }
+                   ONLY_SERVICES="$2"; shift 2 ;;
+      --only=*)    ONLY_SERVICES="${1#*=}"; shift ;;
+      --sync-only) SYNC_ONLY=true; shift ;;
+      *)           _rest+=("$1"); shift ;;
+    esac
+  done
+  # ${arr[@]} puro quebra com "unbound variable" no bash 3.2 (padrão do macOS)
+  # quando o array está vazio — mesmo declarado. O idioma abaixo é o único que
+  # preserva $#=0 nesse caso (o "${arr[@]:-}" mais comum gera $#=1, um arg vazio).
+  set -- "${_rest[@]+"${_rest[@]}"}"
+
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" == "--help" ]]; then
+      show_usage; exit 0
+    fi
+  done
+
+  if [[ $# -gt 0 && ! "$1" =~ ^- ]]; then
+    ENV_TARGET="$1"; shift
+  fi
+
+  if [[ $# -gt 0 && ! "$1" =~ ^- ]]; then
+    SERVER_FILTER="$1"; shift
+  fi
+
+  while getopts ":nvrpe" opt; do
+    case $opt in
+      n) DRY_RUN=true ;;
+      v) VERBOSE=true ;;
+      r) SKIP_EXEC=true ;;
+      p) SKIP_PERMS=true ;;
+      e) SKIP_ENV=true ;;
+      :) print_error "Opção -$OPTARG requer valor"; exit 1 ;;
+      \?) print_error "Opção inválida: -$OPTARG"; show_usage; exit 1 ;;
+    esac
+  done
+
+  if [[ -z "$ENV_TARGET" ]]; then
+    print_error "Ambiente obrigatório: dev, prd ou stg"
+    show_usage; exit 1
+  fi
+}
+
+################################################################################
+# Leitura do servers.yml (via Python3 stdlib — sem dependências externas)
+################################################################################
+
+_parse_servers_yml() {
+  local env="$1" filter="${2:-}"
+  python3 - "$env" "$filter" << 'PYEOF'
+import re, sys
+
+env = sys.argv[1]
+server_filter = sys.argv[2] if len(sys.argv) > 2 else ""
+
+try:
+    with open('servers.yml') as f:
+        content = f.read()
+except FileNotFoundError:
+    sys.exit(0)
+
+env_match = re.search(
+    r'^  ' + re.escape(env) + r':\n((?:    .*\n?)*)',
+    content, re.MULTILINE
+)
+if not env_match:
+    sys.exit(0)
+
+section = env_match.group(1)
+servers = re.findall(
+    r'    - name: (\S+)\n      label: (.*?)\n      env_file: (\S+)',
+    section
+)
+for name, label, env_file in servers:
+    if not server_filter or name == server_filter:
+        print(f'{name}|{label.strip()}|{env_file}')
+PYEOF
+}
+
+################################################################################
+# Deploy de um servidor
+################################################################################
+
+_build_flags() {
+  local flags=""
+  if [[ "$DRY_RUN"    == true ]]; then flags="$flags -n"; fi
+  if [[ "$VERBOSE"    == true ]]; then flags="$flags -v"; fi
+  if [[ "$SKIP_EXEC"  == true ]]; then flags="$flags -r"; fi
+  if [[ "$SKIP_PERMS" == true ]]; then flags="$flags -p"; fi
+  if [[ "$SKIP_ENV"   == true ]]; then flags="$flags -e"; fi
+  if [[ "$SYNC_ONLY"  == true ]]; then flags="$flags --sync-only"; fi
+  if [[ -n "$ONLY_SERVICES" ]];   then flags="$flags --only=${ONLY_SERVICES// /,}"; fi
+  # ⚠️ printf, nunca echo: com flags="-n" o builtin `echo` interpreta o valor
+  #    como a SUA opção -n (suprimir quebra de linha) e não imprime nada. O
+  #    resultado era o dry-run virar deploy real, em silêncio.
+  printf '%s\n' "${flags# }"
+}
+
+deploy_server() {
+  local name="$1" label="$2" env_file="$3"
+  local dir base env_name
+
+  dir="$(dirname "$env_file")"
+  base="$(basename "$env_file")"
+
+  # ".env.prd" → "prd" | ".env.dev" → "dev" | ".env" → "" (deploy-sync usa padrão)
+  if [[ "$base" == ".env" ]]; then
+    env_name=""
+  else
+    env_name="${base#.env.}"
+  fi
+
+  local flags
+  flags="$(_build_flags)"
+
+  print_header "[$name] $label"
+  print_info "Ambiente: ${env_name:-padrão} | Config: $env_file"
+
+  # shellcheck disable=SC2086
+  (cd "$dir" && "$SYNC_SERVER" ${env_name:+"$env_name"} $flags)
+}
+
+################################################################################
+# Principal
+################################################################################
+
+main() {
+  parse_arguments "$@"
+
+  if [[ ! -x "$SYNC_SERVER" ]]; then
+    print_error "deploy-sync não encontrado em: $SYNC_SERVER"
+    exit 1
+  fi
+
+  # Sem servers.yml → chama deploy-sync diretamente
+  if [[ ! -f "servers.yml" ]]; then
+    print_warning "servers.yml não encontrado — chamando deploy-sync diretamente"
+    local flags
+    flags="$(_build_flags)"
+    # shellcheck disable=SC2086
+    "$SYNC_SERVER" "$ENV_TARGET" $flags
+    return
+  fi
+
+  local servers
+  servers=$(_parse_servers_yml "$ENV_TARGET" "$SERVER_FILTER")
+
+  if [[ -z "$servers" ]]; then
+    local msg="Nenhum servidor encontrado para ambiente '${ENV_TARGET}'"
+    if [[ -n "$SERVER_FILTER" ]]; then
+      msg+=" com filtro '${SERVER_FILTER}'"
+    fi
+    print_error "$msg em servers.yml"
+    exit 1
+  fi
+
+  # Executa deploy de cada servidor
+  local total=0 failed=0
+  while IFS='|' read -r name label env_file; do
+    total=$(( total + 1 ))
+    deploy_server "$name" "$label" "$env_file" || {
+      print_error "Falha no deploy de: $name"
+      failed=$(( failed + 1 ))
+    }
+  done <<< "$servers"
+
+  # Resumo
+  print_header "Resumo"
+  local ok=$(( total - failed ))
+  if [[ $failed -eq 0 ]]; then
+    print_success "$ok/$total servidor(es) sincronizado(s) com sucesso"
+  else
+    print_warning "$ok/$total com sucesso — $failed com falha"
+  fi
+}
+
+main "$@"

@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+################################################################################
+# harden-vm — fecha a superfície de rede de uma VM Docker
+#
+# Resolve três problemas encontrados no padrão atual das VMs:
+#   1. Nenhum firewall configurado (o install-ubuntu24.sh não instala ufw).
+#   2. Portas de banco/cache publicadas pelo Docker em 0.0.0.0.
+#   3. SSH aceitando root com senha.
+#
+# ⚠️ ARMADILHA CENTRAL: o Docker insere suas regras na chain FORWARD, ANTES do
+#    ufw. Uma porta publicada com `-p 3306:3306` continua acessível pela internet
+#    MESMO com `ufw deny 3306` ativo. Bloquear só com ufw dá falsa sensação de
+#    segurança. Por isso este script também escreve na chain DOCKER-USER, que é
+#    o único ponto que o Docker respeita.
+#
+# Por padrão faz DRY-RUN. Use --apply para executar de fato.
+#
+# Uso:  ./harden-vm [--apply] [--ssh-port N] [--allow IP] [--no-ssh-hardening]
+################################################################################
+
+readonly RED='\033[0;31m'; readonly GREEN='\033[0;32m'; readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'; readonly NC='\033[0m'
+
+print_error()   { echo -e "${RED}[ERRO]${NC} $*" >&2; }
+print_success() { echo -e "${GREEN}[OK]${NC} $*"; }
+print_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
+print_warning() { echo -e "${YELLOW}[AVISO]${NC} $*"; }
+
+APPLY=false
+SSH_PORT=""
+ALLOW_IPS=()
+SSH_HARDENING=true
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --apply)             APPLY=true; shift ;;
+    --ssh-port)          SSH_PORT="$2"; shift 2 ;;
+    --allow)             ALLOW_IPS+=("$2"); shift 2 ;;
+    --no-ssh-hardening)  SSH_HARDENING=false; shift ;;
+    -h|--help)
+      sed -n '3,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) print_error "Argumento desconhecido: $1"; exit 1 ;;
+  esac
+done
+
+run() {
+  if [[ "$APPLY" == true ]]; then
+    eval "$@"
+  else
+    echo "    [dry-run] $*"
+  fi
+}
+
+[[ $EUID -eq 0 ]] || { print_error "Rode como root."; exit 1; }
+
+# ─── Descoberta do ambiente ───────────────────────────────────────────────────
+
+# Porta do SSH: respeita o que estiver no sshd_config, para não travar o acesso.
+if [[ -z "$SSH_PORT" ]]; then
+  SSH_PORT="$(awk '/^[[:space:]]*Port[[:space:]]+[0-9]+/{print $2; exit}' /etc/ssh/sshd_config 2>/dev/null || true)"
+  SSH_PORT="${SSH_PORT:-22}"
+fi
+
+# Interface externa = a que carrega a rota default.
+EXT_IF="$(ip route show default 2>/dev/null | awk '/default/{print $5; exit}')"
+[[ -n "$EXT_IF" ]] || { print_error "Não consegui detectar a interface externa."; exit 1; }
+
+echo
+print_info "Interface externa: ${EXT_IF}"
+print_info "Porta do SSH:      ${SSH_PORT}"
+print_info "Modo:              $([[ "$APPLY" == true ]] && echo 'APLICAR' || echo 'DRY-RUN (use --apply)')"
+echo
+
+# ─── Diagnóstico: o que está publicado em 0.0.0.0 hoje ────────────────────────
+
+print_info "Portas publicadas pelo Docker em endereço público:"
+EXPOSED="$(docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null | grep -E '0\.0\.0\.0|\[::\]' || true)"
+if [[ -n "$EXPOSED" ]]; then
+  echo "$EXPOSED" | sed 's/^/    /'
+  print_warning "Essas portas estão acessíveis pela internet. O ideal é corrigir no"
+  print_warning "docker-compose (bind em 127.0.0.1) — as regras abaixo são a segunda linha de defesa."
+else
+  print_success "Nenhuma. (Os binds já estão em loopback ou o Docker não está rodando.)"
+fi
+echo
+
+# ─── 1. ufw: tráfego destinado ao HOST ────────────────────────────────────────
+
+print_info "Configurando ufw (protege serviços do host, não os do Docker)..."
+
+if ! command -v ufw >/dev/null 2>&1; then
+  run "apt-get update -qq && apt-get install -y -qq ufw"
+fi
+
+# A ordem importa: liberar SSH ANTES de mudar a policy default para deny.
+run "ufw --force reset >/dev/null"
+run "ufw default deny incoming"
+run "ufw default allow outgoing"
+run "ufw allow ${SSH_PORT}/tcp comment 'SSH'"
+run "ufw allow 80/tcp comment 'HTTP'"
+run "ufw allow 443/tcp comment 'HTTPS'"
+
+for ip in "${ALLOW_IPS[@]:-}"; do
+  [[ -n "$ip" ]] && run "ufw allow from ${ip} comment 'IP confiável'"
+done
+
+run "ufw --force enable"
+print_success "ufw ativo: entrada negada por padrão, exceto ${SSH_PORT}, 80 e 443."
+echo
+
+# ─── 2. DOCKER-USER: tráfego destinado aos CONTAINERS ─────────────────────────
+
+print_info "Configurando a chain DOCKER-USER (o que o ufw sozinho NÃO cobre)..."
+
+run "iptables -N DOCKER-USER 2>/dev/null || true"
+
+# Zera só as regras que este script criou (marcadas por comentário), para ser
+# idempotente sem destruir regras que outra ferramenta tenha inserido.
+# ⚠️ Remove as regras deste script antes de reinserir, para ser idempotente.
+#
+#    Derivar o comando de `iptables -S` NÃO funciona: a saída traz o comentário
+#    entre aspas e, repassada sem aspas, quebra em vários argumentos — a deleção
+#    falha em silêncio e rodar --apply duas vezes DUPLICA as regras.
+#
+#    Deletar por número de linha evita o problema de quoting por completo. A cada
+#    remoção a numeração muda, então reconsultamos a cada volta.
+if [[ "$APPLY" == true ]]; then
+  while :; do
+    _n=$(iptables -L DOCKER-USER -n --line-numbers 2>/dev/null | awk '/harden-vm/{print $1; exit}')
+    [[ -z "$_n" ]] && break
+    iptables -D DOCKER-USER "$_n" 2>/dev/null || break
+  done
+else
+  echo "    [dry-run] remove as regras 'harden-vm' já existentes em DOCKER-USER"
+fi
+
+# Regra final primeiro: cada -I insere no topo, então a ordem de escrita é a inversa
+# da ordem de avaliação. Resultado desejado (de cima para baixo):
+#   1) established/related  ACCEPT
+#   2) 80/443               ACCEPT
+#   3) IPs confiáveis       ACCEPT
+#   4) resto do EXT_IF      DROP
+run "iptables -I DOCKER-USER -i ${EXT_IF} -j DROP -m comment --comment 'harden-vm: bloqueio padrão'"
+
+for ip in "${ALLOW_IPS[@]:-}"; do
+  [[ -n "$ip" ]] && run "iptables -I DOCKER-USER -i ${EXT_IF} -s ${ip} -j RETURN -m comment --comment 'harden-vm: IP confiável'"
+done
+
+run "iptables -I DOCKER-USER -i ${EXT_IF} -p tcp --dport 443 -j RETURN -m comment --comment 'harden-vm: HTTPS'"
+run "iptables -I DOCKER-USER -i ${EXT_IF} -p tcp --dport 80 -j RETURN -m comment --comment 'harden-vm: HTTP'"
+run "iptables -I DOCKER-USER -i ${EXT_IF} -m state --state ESTABLISHED,RELATED -j RETURN -m comment --comment 'harden-vm: conexões estabelecidas'"
+
+print_success "DOCKER-USER: só 80 e 443 entram nos containers pela interface externa."
+echo
+
+# ─── 3. Persistência das regras entre reboots ─────────────────────────────────
+
+print_info "Persistindo regras de iptables..."
+if ! dpkg -s iptables-persistent >/dev/null 2>&1; then
+  run "echo 'iptables-persistent iptables-persistent/autosave_v4 boolean true' | debconf-set-selections"
+  run "echo 'iptables-persistent iptables-persistent/autosave_v6 boolean true' | debconf-set-selections"
+  run "apt-get install -y -qq iptables-persistent"
+fi
+run "netfilter-persistent save"
+print_success "Regras sobrevivem a reboot."
+echo
+
+# ─── 4. SSH ───────────────────────────────────────────────────────────────────
+
+if [[ "$SSH_HARDENING" == true ]]; then
+  print_info "Endurecendo o SSH..."
+
+  # Guarda anti-lockout: sem chave autorizada, não desliga a senha.
+  KEYCOUNT=0
+  for f in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do
+    [[ -f "$f" ]] && KEYCOUNT=$((KEYCOUNT + $(grep -cE '^(ssh|ecdsa)-' "$f" 2>/dev/null || echo 0)))
+  done
+
+  if [[ "$KEYCOUNT" -eq 0 ]]; then
+    print_error "Nenhuma chave pública encontrada em authorized_keys."
+    print_error "Desligar a senha agora TRANCARIA você para fora. Pulando o passo do SSH."
+    print_error "Instale sua chave e rode de novo (ou use --no-ssh-hardening para silenciar)."
+  else
+    print_success "${KEYCOUNT} chave(s) pública(s) encontrada(s) — seguro desligar a senha."
+    run "cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.\$(date +%Y%m%d%H%M%S)"
+    run "mkdir -p /etc/ssh/sshd_config.d"
+    run "cat > /etc/ssh/sshd_config.d/99-harden.conf <<'EOC'
+# Gerado por harden-vm — não editar à mão
+PermitRootLogin prohibit-password
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+MaxAuthTries 3
+EOC"
+    run "sshd -t"   # valida ANTES de recarregar; falha aqui aborta o script
+    run "systemctl reload ssh 2>/dev/null || systemctl reload sshd"
+    print_success "SSH: só chave pública. Senha e login interativo desabilitados."
+
+    if ! command -v fail2ban-server >/dev/null 2>&1; then
+      run "apt-get install -y -qq fail2ban"
+      run "systemctl enable --now fail2ban"
+      print_success "fail2ban instalado."
+    fi
+  fi
+  echo
+fi
+
+# ─── Resumo ───────────────────────────────────────────────────────────────────
+
+if [[ "$APPLY" == true ]]; then
+  print_success "Hardening aplicado."
+  echo
+  print_info "Verifique de FORA da VM (de outra máquina):"
+  echo "    nc -z -w4 <IP> 3306   # deve falhar"
+  echo "    nc -z -w4 <IP> 6379   # deve falhar"
+  echo "    nc -z -w4 <IP> 8080   # deve falhar"
+  echo "    nc -z -w4 <IP> 443    # deve conectar"
+  echo
+  print_warning "NÃO ENCERRE esta sessão SSH antes de abrir uma nova em paralelo e confirmar"
+  print_warning "que o acesso continua funcionando."
+else
+  print_warning "Dry-run: nada foi alterado. Rode com --apply para valer."
+fi

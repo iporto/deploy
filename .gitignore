@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Editores
+.vscode/
+.idea/
+*.swp
+
+# Ferramentas de agente
+.claude/
+
+# Nada de segredo deve entrar aqui — estes scripts leem envs do projeto,
+# nunca os armazenam. As linhas abaixo são rede de segurança.
+.env
+.env.*
+*.key
+*.pem
+keys.txt

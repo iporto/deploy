@@ -1,0 +1,709 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+################################################################################
+# Script de Sincronização de Servidor
+# Sincroniza arquivos locais para servidor remoto com suporte a bastion host
+#
+# Configuração via .env:
+#   REMOTE_HOST       Host remoto (obrigatório)   ex: user@192.168.1.1
+#   REMOTE_BASE_PATH  Caminho remoto (obrigatório) ex: /home/deploy/projeto
+#   BASTION_HOST      Bastion/jump host (opcional) ex: user@bastion.host
+#   SYNC_POST_RUN     Se "true", executa ./deploy-run no servidor após sync
+################################################################################
+
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m'
+
+ENV_TARGET=""
+LOCAL_DIR=${LOCAL_DIR:-.}
+SSH_KEY=${SSH_KEY:-}
+REMOTE_HOST_OVERRIDE=""
+REMOTE_DIR_OVERRIDE=""
+
+DRY_RUN=false
+SKIP_PERMS=false
+SKIP_ENV=false
+ONLY_SERVICES=""
+SYNC_ONLY=false
+SKIP_EXEC=false
+VERBOSE=false
+
+SSH_CONTROL_SOCKET=""
+
+# Lista de fallback: usada apenas quando o projeto NÃO tem .rsyncignore.
+# Projetos com o arquivo controlam as exclusões por lá.
+# Usado só quando o projeto NÃO tem .rsyncignore. Na prática esta lista é o que
+# protege a maioria dos projetos — mantenha-a alinhada com o .rsyncignore de
+# referência.
+EXCLUDE_PATTERNS=(
+  "code/"
+  "Www/"
+  ".git/"
+  ".vscode/"
+  ".idea/"
+  ".DS_Store"
+  "*.swp"
+  "*.swo"
+  "*.log"
+  "infrastructure/traefik/acme.json"
+  "storage/"
+  "node_modules/"
+  ".cache/"
+
+  # ⚠️ Backups vêm DA VM para cá. Reenviá-los sobe o dump do banco de volta ao
+  #    servidor. O curinga é necessário: `backups/` não pega `backups-legacy/`.
+  "backup*/"
+
+  # ⚠️ Envs DECRIPTADOS. A fonte cifrada (.envs/*.env.prd) é sincronizada; o
+  #    resultado em texto puro é entregue depois, por dentro do SSH. Sem esta
+  #    exclusão o --delete os APAGA na VM e os containers ficam sem o arquivo.
+  ".envs/*.env"
+
+  # Symlinks para Deploy-Scripts/. O alvo não existe na VM: sincronizá-los só
+  # planta links quebrados lá.
+  #
+  # ⚠️ deploy-run FICA FORA desta lista de propósito — ver o comentário do -L
+  #    em sync_files(). Ele roda NA VM (modo local e o modo remoto via SSH) e
+  #    por isso precisa ser entregue e mantido atualizado lá.
+  "deploy"
+  "deploy-audit"
+  "deploy-backup"
+  "deploy-promote"
+  "deploy-readme.md"
+  "deploy-sync"
+  "deploy-token-check"
+  "envedit"
+  "harden-vm"
+)
+
+################################################################################
+# Utilidade
+################################################################################
+
+print_error()   { echo -e "${RED}[ERRO]${NC} $*" >&2; }
+print_success() { echo -e "${GREEN}[OK]${NC} $*"; }
+print_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
+print_warning() { echo -e "${YELLOW}[AVISO]${NC} $*"; }
+print_header()  { echo -e "\n${BLUE}===${NC} $* ${BLUE}===${NC}"; }
+
+# Lê o valor de uma chave de um arquivo .env sem fazer source
+_env_read() {
+  local key="$1" file="$2"
+  grep "^${key}=" "$file" | cut -d= -f2- | tr -d '"' | tr -d "'" || true
+}
+
+# Encerra a conexão multiplexada ao sair
+_cleanup_ssh() {
+  if [[ -n "$SSH_CONTROL_SOCKET" ]]; then
+    ssh -O exit -o "ControlPath=${SSH_CONTROL_SOCKET}" placeholder 2>/dev/null || true
+    rm -f "$SSH_CONTROL_SOCKET"
+  fi
+}
+trap _cleanup_ssh EXIT INT TERM
+
+show_usage() {
+  cat << EOF
+Uso: $(basename "$0") [AMBIENTE] [OPÇÕES]
+
+AMBIENTE:
+  dev, prd, stg    Ambiente alvo (usa .env.AMBIENTE)
+  (omitir)         Usa .env padrão
+
+OPÇÕES:
+  -E ENV           Especifica ambiente via flag
+  -l DIR           Diretório local (padrão: .)
+  -d DIR           Override do diretório remoto
+  -h HOST          Override do host remoto
+  -n               Dry-run (simula sem executar)
+  -p               Pula aplicação de permissões
+  -e               Pula cópia do .env remoto
+  --only LISTA     Reinicia só estes serviços em vez de recriar tudo.
+                   Aceita nomes separados por espaço/vírgula, ou o grupo "app"
+                   (todo serviço do compose que monta um env de .envs/).
+                   Ex.: --only "php supervisor"   |   --only app
+  --sync-only      Entrega arquivos e envs e para. Não toca em container.
+  -r               Pula execução de pós-sync
+  -v               Verbose (rsync com progresso detalhado)
+  --help           Mostra esta ajuda
+
+EXEMPLOS:
+  $(basename "$0") prd           Sincroniza usando .env.prd
+  $(basename "$0") prd -n        Dry-run para produção
+  $(basename "$0") dev -v        Desenvolvimento com verbose
+  $(basename "$0") prd -r        Sync sem executar deploy-run remoto
+  $(basename "$0")               Usa .env padrão
+
+VARIÁVEIS NO .env.AMBIENTE (local):
+  REMOTE_HOST       user@ip — destino SSH
+  REMOTE_BASE_PATH  Caminho no servidor remoto
+  BASTION_HOST      user@bastion — jump host (opcional)
+  SYNC_POST_RUN     true — executa ./deploy-run no servidor após sync
+
+EOF
+}
+
+################################################################################
+# Configuração
+################################################################################
+
+parse_arguments() {
+  # getopts não aceita opção longa com valor separado por espaço.
+  # Normaliza "--only X" em "--only=X" antes de processar.
+  local -a _args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --only)
+        [[ $# -lt 2 ]] && { print_error "--only exige um valor"; exit 1; }
+        _args+=("--only=$2"); shift 2 ;;
+      *) _args+=("$1"); shift ;;
+    esac
+  done
+  # ${arr[@]} puro quebra com "unbound variable" no bash 3.2 (padrão do macOS)
+  # quando o array está vazio — mesmo declarado. O idioma abaixo é o único que
+  # preserva $#=0 nesse caso (o "${arr[@]:-}" mais comum gera $#=1, um arg vazio).
+  set -- "${_args[@]+"${_args[@]}"}"
+
+  if [[ $# -gt 0 && ! "$1" =~ ^- ]]; then
+    ENV_TARGET="$1"
+    shift
+  fi
+
+  while getopts ":nperl:d:h:E:v-:" opt; do
+    case $opt in
+      n) DRY_RUN=true ;;
+      p) SKIP_PERMS=true ;;
+      e) SKIP_ENV=true ;;
+      r) SKIP_EXEC=true ;;
+      v) VERBOSE=true ;;
+      l) LOCAL_DIR="$OPTARG" ;;
+      d) REMOTE_DIR_OVERRIDE="$OPTARG" ;;
+      h) REMOTE_HOST_OVERRIDE="$OPTARG" ;;
+      E) ENV_TARGET="$OPTARG" ;;
+      -)
+        case "$OPTARG" in
+          help) show_usage; exit 0 ;;
+          only=*)    ONLY_SERVICES="${OPTARG#*=}" ;;
+          sync-only) SYNC_ONLY=true ;;
+          *) print_error "Opção inválida: --$OPTARG"; show_usage; exit 1 ;;
+        esac
+        ;;
+      :) print_error "Opção -$OPTARG requer valor"; exit 1 ;;
+      \?) print_error "Opção inválida: -$OPTARG"; show_usage; exit 1 ;;
+    esac
+  done
+}
+
+load_env_file() {
+  local env_file
+
+  if [[ -z "$ENV_TARGET" ]]; then
+    env_file=".env"
+    print_info "Nenhum ambiente especificado, usando .env padrão"
+  else
+    case "$ENV_TARGET" in
+      dev|prd|stg)
+        env_file=".env.${ENV_TARGET}"
+        ;;
+      *)
+        print_error "Ambiente inválido: ${ENV_TARGET} (válidos: dev, prd, stg)"
+        exit 1
+        ;;
+    esac
+  fi
+
+  if [[ ! -f "$env_file" ]]; then
+    print_error "Arquivo $env_file não encontrado"
+    exit 1
+  fi
+
+  print_info "Carregando configurações de: $env_file"
+
+  BASTION_HOST=$(_env_read BASTION_HOST "$env_file")
+  REMOTE_HOST=$(_env_read REMOTE_HOST "$env_file")
+  REMOTE_BASE_PATH=$(_env_read REMOTE_BASE_PATH "$env_file")
+  SYNC_POST_RUN=$(_env_read SYNC_POST_RUN "$env_file")
+
+  REMOTE_HOST=${REMOTE_HOST_OVERRIDE:-$REMOTE_HOST}
+  REMOTE_BASE_PATH=${REMOTE_DIR_OVERRIDE:-$REMOTE_BASE_PATH}
+
+  if [[ -z "$REMOTE_HOST" ]]; then
+    print_error "REMOTE_HOST não definido em $env_file"
+    exit 1
+  fi
+
+  if [[ -z "$REMOTE_BASE_PATH" ]]; then
+    print_error "REMOTE_BASE_PATH não definido em $env_file"
+    exit 1
+  fi
+}
+
+show_configuration() {
+  print_header "Configuração de Sincronização"
+  echo "Ambiente:          ${ENV_TARGET:-default}"
+  echo "Host Remoto:       $REMOTE_HOST"
+  echo "Bastion Host:      ${BASTION_HOST:-nenhum}"
+  echo "Diretório Remoto:  $REMOTE_BASE_PATH"
+  echo "Diretório Local:   $LOCAL_DIR"
+  echo "Dry-run:           $DRY_RUN"
+  echo "Pular Permissões:  $SKIP_PERMS"
+  echo "Pular .env:        $SKIP_ENV"
+  echo "Pular Pós-Sync:    $SKIP_EXEC"
+  echo "Executar deploy-run: ${SYNC_POST_RUN:-false}"
+  print_header ""
+  echo
+}
+
+################################################################################
+# SSH
+################################################################################
+
+build_ssh_command() {
+  # Usa multiplexing: a primeira conexão (check_ssh_connectivity) abre o master;
+  # todas as chamadas seguintes (mkdir, rsync, chown, deploy-run) reutilizam o mesmo
+  # socket sem novo handshake/autenticação.
+  SSH_CONTROL_SOCKET="/tmp/deploy-sync-$$.sock"
+
+  local ssh_cmd="ssh"
+  ssh_cmd+=" -o StrictHostKeyChecking=accept-new"
+  ssh_cmd+=" -o ServerAliveInterval=30"
+  ssh_cmd+=" -o ConnectTimeout=10"
+  ssh_cmd+=" -o ControlMaster=auto"
+  ssh_cmd+=" -o ControlPath=${SSH_CONTROL_SOCKET}"
+  ssh_cmd+=" -o ControlPersist=120"
+
+  if [[ -n "$SSH_KEY" ]]; then
+    ssh_cmd+=" -i ${SSH_KEY}"
+  fi
+
+  if [[ -n "${BASTION_HOST:-}" ]]; then
+    ssh_cmd+=" -J ${BASTION_HOST}"
+    print_info "SSH Jump configurado através de: $BASTION_HOST"
+  fi
+
+  echo "$ssh_cmd"
+}
+
+check_ssh_connectivity() {
+  local ssh_cmd="$1"
+  local host="$2"
+
+  print_info "Verificando conectividade SSH com $host..."
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_warning "Dry-run: pulando verificação de conectividade"
+    return 0
+  fi
+
+  if $ssh_cmd "$host" true 2>/dev/null; then
+    print_success "Conectividade SSH verificada"
+  else
+    print_error "Falha ao conectar via SSH em $host"
+    [[ -n "${BASTION_HOST:-}" ]] && print_info "Verifique o bastion host: $BASTION_HOST"
+    return 1
+  fi
+}
+
+################################################################################
+# Sincronização
+################################################################################
+
+check_or_create_remote_directory() {
+  local ssh_cmd="$1"
+  local host="$2"
+  local remote_path="$3"
+
+  print_info "Verificando diretório remoto: $remote_path"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_warning "Dry-run: pulando verificação/criação de diretório"
+    return 0
+  fi
+
+  if $ssh_cmd "$host" "[[ -d '${remote_path}' ]]" 2>/dev/null; then
+    print_success "Diretório remoto existe"
+  else
+    print_warning "Diretório não existe, criando recursivamente..."
+    $ssh_cmd "$host" "mkdir -p '${remote_path}'" && print_success "Diretório criado: $remote_path" || {
+      print_error "Falha ao criar diretório remoto"
+      return 1
+    }
+  fi
+}
+
+sync_files() {
+  local ssh_cmd="$1"
+  local host="$2"
+  local local_path="$3"
+  local remote_path="$4"
+
+  print_header "Iniciando Sincronização"
+
+  if ! command -v rsync >/dev/null 2>&1; then
+    print_error "rsync não encontrado. Instale com: brew install rsync"
+    exit 1
+  fi
+
+  # -r recursive  -L dereferencia symlinks (copia o conteúdo real, não o link)
+  # -t timestamps  -g group  -o owner  -D devices  -z compress  -O omit dir times
+  #
+  # -L é essencial para os symlinks deploy/deploy-run/deploy-backup/deploy-sync:
+  # eles apontam para fora do projeto (o diretório dos scripts) e não existem
+  # no servidor remoto. Com -l (padrão do -a) o symlink quebrado seria copiado como
+  # está; com -L o rsync segue o link e envia o script real.
+  local rsync_opts=(-rLtgoDzO --delete --itemize-changes)
+
+  if [[ "$VERBOSE" == true ]]; then
+    rsync_opts+=(-v --progress)
+  fi
+
+  local rsync_args=()
+
+  # ⚠️ O .rsyncignore do projeto tem precedência sobre a lista embutida.
+  #
+  #    O arquivo existia e era versionado, mas o script NUNCA o lia — só usava
+  #    EXCLUDE_PATTERNS. Editar o .rsyncignore não surtia efeito algum, e o
+  #    sintoma era backups subindo para a VM e os envs decriptados sendo
+  #    apagados a cada deploy.
+  if [[ -f "${local_path}/.rsyncignore" ]]; then
+    rsync_args+=(--exclude-from="${local_path}/.rsyncignore")
+    print_info "Exclusões: .rsyncignore do projeto"
+  else
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+      rsync_args+=(--exclude="$pattern")
+    done
+    print_info "Exclusões: lista padrão do script (sem .rsyncignore no projeto)"
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    rsync_args+=(-n)
+    print_warning "Modo dry-run ativado — nenhuma alteração será feita"
+  fi
+
+  print_info "Sincronizando arquivos..."
+  if rsync -e "$ssh_cmd" "${rsync_opts[@]}" "${rsync_args[@]}" "${local_path}/" "${host}:${remote_path}/"; then
+    print_success "Sincronização concluída"
+  else
+    print_error "Falha na sincronização"
+    return 1
+  fi
+}
+
+apply_permissions() {
+  local ssh_cmd="$1"
+  local host="$2"
+  local remote_path="$3"
+
+  if [[ "$SKIP_PERMS" == true ]]; then
+    print_warning "Pulando aplicação de permissões (flag -p)"
+    return 0
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_warning "Dry-run: pulando aplicação de permissões"
+    return 0
+  fi
+
+  # Extrai usuário do formato user@host
+  local remote_user="${host%%@*}"
+  if [[ "$remote_user" == "$host" ]]; then
+    print_warning "Usuário não detectado em REMOTE_HOST (esperado: user@host) — pulando chown"
+    return 0
+  fi
+
+  print_info "Aplicando permissões para ${remote_user}..."
+
+  # ⚠️ `code/` fica FORA do chown.
+  #
+  # Ele guarda os checkouts de aplicação: não é sincronizado (está no
+  # .rsyncignore) e pertence ao usuário de desenvolvimento — uid 1000, o mesmo
+  # que os containers `env-*` aplicam no boot. Um `chown -R` sobre o caminho
+  # inteiro o entregava ao usuário do deploy (root), e aí o PHP-FPM perdia a
+  # escrita em storage/logs: TODO request virava 500, em todos os apps, até
+  # alguém recriar os containers. O rsync já o ignora; o chown precisa ignorar
+  # também.
+  #
+  # `-prune` não desce no diretório e nem o toca. `chown -h` nunca deferencia
+  # symlink — preserva o comportamento do `chown -R`, que também não os segue.
+  local base="${remote_path%/}"
+  local chown_cmd="find '${base}' -path '${base}/code' -prune -o -exec chown -h ${remote_user}:${remote_user} {} +"
+
+  if $ssh_cmd "$host" "$chown_cmd" 2>/dev/null; then
+    print_success "Permissões aplicadas (code/ preservado)"
+  else
+    print_warning "Não foi possível aplicar permissões (pode requerer sudo)"
+  fi
+}
+
+# Localiza a chave privada age (o caminho padrão difere entre macOS e Linux).
+_resolve_age_key() {
+  [[ -n "${SOPS_AGE_KEY_FILE:-}" && -f "${SOPS_AGE_KEY_FILE}" ]] && return 0
+  local c
+  for c in "$HOME/Library/Application Support/sops/age/keys.txt" \
+           "${XDG_CONFIG_HOME:-$HOME/.config}/sops/age/keys.txt"; do
+    if [[ -f "$c" ]]; then export SOPS_AGE_KEY_FILE="$c"; return 0; fi
+  done
+  return 1
+}
+
+# Decripta e envia os envs para a VM via stdin do SSH (sem arquivo temporário).
+_push_sops_envs() {
+  local ssh_cmd="$1" host="$2" remote_path="$3"
+  local flags=(--input-type dotenv --output-type dotenv)
+
+  if ! command -v sops >/dev/null 2>&1; then
+    print_error "Projeto usa SOPS (.sops.yaml presente) mas 'sops' não está instalado."
+    print_error "Instale com: brew install sops age"
+    return 1
+  fi
+
+  if ! _resolve_age_key; then
+    print_error "Chave age não encontrada — impossível decriptar os envs."
+    print_error "Esperada em ~/Library/Application Support/sops/age/keys.txt (macOS)"
+    print_error "ou ~/.config/sops/age/keys.txt (Linux)."
+    return 1
+  fi
+
+  local src="${LOCAL_DIR}/.env.${ENV_TARGET}"
+  if [[ ! -f "$src" ]]; then
+    print_error "Arquivo ${src} não encontrado"
+    return 1
+  fi
+
+  print_info "Decriptando e enviando .env.${ENV_TARGET} → .env..."
+  if ! sops -d "${flags[@]}" "$src" \
+       | $ssh_cmd "$host" "umask 077 && cat > '${remote_path}/.env' && chmod 600 '${remote_path}/.env'"; then
+    print_error "Falha ao enviar o .env decriptado"
+    return 1
+  fi
+  print_success "Arquivo .env atualizado (600)"
+
+  # Envs por aplicação: .envs/<app>.env.<ambiente> → .envs/<app>.env na VM.
+  local sent=0 f app
+  shopt -s nullglob
+  for f in "${LOCAL_DIR}"/.envs/*.env."${ENV_TARGET}"; do
+    app="$(basename "$f")"; app="${app%%.env.*}"
+    if ! $ssh_cmd "$host" "mkdir -p '${remote_path}/.envs'"; then
+      print_error "Não foi possível criar ${remote_path}/.envs"
+      shopt -u nullglob; return 1
+    fi
+    if ! sops -d "${flags[@]}" "$f" \
+         | $ssh_cmd "$host" "umask 077 && cat > '${remote_path}/.envs/${app}.env' && chmod 600 '${remote_path}/.envs/${app}.env'"; then
+      print_error "Falha ao enviar .envs/${app}.env"
+      shopt -u nullglob; return 1
+    fi
+    sent=$((sent+1))
+  done
+  shopt -u nullglob
+
+  [[ "$sent" -gt 0 ]] && print_success "${sent} env(s) de aplicação enviados (600)"
+  return 0
+}
+
+copy_env_file() {
+  local ssh_cmd="$1"
+  local host="$2"
+  local remote_path="$3"
+
+  if [[ "$SKIP_ENV" == true ]]; then
+    print_warning "Pulando cópia do arquivo .env (flag -e)"
+    return 0
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_warning "Dry-run: pulando cópia do .env"
+    return 0
+  fi
+
+  if [[ -z "$ENV_TARGET" ]]; then
+    print_info "Ambiente padrão — .env remoto já está correto"
+    return 0
+  fi
+
+  local env_source=".env.${ENV_TARGET}"
+
+  # ── Modo SOPS ───────────────────────────────────────────────────────────────
+  # Se o projeto tem .sops.yaml, os envs versionados estão CRIPTOGRAFADOS. Copiar
+  # o arquivo como está entregaria texto cifrado ao container. Aqui decriptamos
+  # localmente e enviamos o resultado pelo túnel do próprio SSH — o texto puro
+  # nunca toca o disco local nem o repositório.
+  #
+  # Projetos sem .sops.yaml seguem exatamente o comportamento anterior.
+  if [[ -f "${LOCAL_DIR}/.sops.yaml" ]]; then
+    _push_sops_envs "$ssh_cmd" "$host" "$remote_path"
+    return $?
+  fi
+
+  print_info "Copiando ${env_source} → .env no servidor remoto..."
+
+  if $ssh_cmd "$host" "cd '${remote_path}' && [[ -f ${env_source} ]] && cp ${env_source} .env"; then
+    print_success "Arquivo .env atualizado"
+  else
+    print_error "Falha ao copiar .env (${env_source} não encontrado no servidor?)"
+    return 1
+  fi
+}
+
+# Resolve o grupo "app": todo serviço do compose que monta um env de .envs/.
+#
+# Derivar do compose em vez de manter lista fixa faz o grupo se manter sozinho —
+# um serviço novo que consome env entra automaticamente, e mysql/redis/traefik
+# ficam de fora por construção, porque não montam env.
+_resolver_grupo_app() {
+  local compose
+  for compose in "${LOCAL_DIR}/docker-compose.${ENV_TARGET}.yml" \
+                 "${LOCAL_DIR}/docker-compose.prod.yml"; do
+    [[ -f "$compose" ]] && break
+  done
+  [[ -f "$compose" ]] || return 1
+
+  python3 - "$compose" <<'PYEOF_GRUPO'
+import sys, re
+texto = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+padrao = r'^  ([a-z0-9_-]+):$'
+linhas = texto.splitlines()
+atual, corpo, saida = None, [], []
+for l in linhas:
+    m = re.match(padrao, l)
+    if m or l.startswith('volumes:') or l.startswith('networks:'):
+        if atual and any('/.envs/' in c for c in corpo):
+            saida.append(atual)
+        atual = m.group(1) if m else None
+        corpo = []
+    elif atual:
+        corpo.append(l)
+if atual and any('/.envs/' in c for c in corpo):
+    saida.append(atual)
+print(' '.join(saida))
+PYEOF_GRUPO
+}
+
+# Reinicia apenas os serviços pedidos, sem tocar em banco, cache ou proxy.
+_reiniciar_servicos() {
+  local ssh_cmd="$1" host="$2" servicos="$3"
+  local projeto svc ids total=0
+
+  projeto=$(_env_read APP_PROJECT_NAME "${LOCAL_DIR}/.env.${ENV_TARGET}")
+  case "$(_env_read APP_ENV "${LOCAL_DIR}/.env.${ENV_TARGET}")" in
+    production)  projeto="${projeto}-prod" ;;
+    staging)     projeto="${projeto}-stg" ;;
+    development) projeto="${projeto}-dev" ;;
+  esac
+
+  for svc in $servicos; do
+    ids=$($ssh_cmd "$host" \
+      "docker ps -q --filter 'label=com.docker.compose.project=${projeto}' \
+                    --filter 'label=com.docker.compose.service=${svc}'" 2>/dev/null)
+    if [[ -z "$ids" ]]; then
+      print_warning "serviço não encontrado em execução: ${svc}"
+      continue
+    fi
+    if $ssh_cmd "$host" "docker restart ${ids//$'\n'/ } >/dev/null"; then
+      print_success "reiniciado: ${svc}"
+      total=$(( total + 1 ))
+    else
+      print_error "falha ao reiniciar: ${svc}"
+      return 1
+    fi
+  done
+
+  print_info "${total} serviço(s) reiniciado(s) — banco, cache e proxy intocados"
+  return 0
+}
+
+execute_post_sync() {
+  local ssh_cmd="$1"
+  local host="$2"
+
+  if [[ "$SKIP_EXEC" == true ]]; then
+    print_warning "Pulando pós-sincronização (flag -r)"
+    return 0
+  fi
+
+  # ── --sync-only: entrega arquivos e envs, não mexe em container nenhum ──────
+  if [[ "$SYNC_ONLY" == true ]]; then
+    print_warning "--sync-only: arquivos e envs entregues; nenhum container tocado"
+    return 0
+  fi
+
+  # ── --only: reinicia apenas os serviços pedidos ─────────────────────────────
+  #
+  # Para mudança de CONFIG (env, php.ini, nginx), reiniciar basta: o entrypoint
+  # roda de novo, refaz o rsync e — na API — dispara o queue:restart.
+  # Para mudança de IMAGEM o caminho é outro: promover a tag.
+  if [[ -n "$ONLY_SERVICES" ]]; then
+    local servicos="$ONLY_SERVICES"
+    if [[ "$servicos" == "app" ]]; then
+      servicos="$(_resolver_grupo_app)" || {
+        print_error "Não consegui resolver o grupo 'app' a partir do compose"
+        return 1
+      }
+      [[ -z "$servicos" ]] && { print_error "Grupo 'app' vazio"; return 1; }
+      print_info "Grupo 'app' → ${servicos}"
+    fi
+    servicos="${servicos//,/ }"
+
+    if [[ "$DRY_RUN" == true ]]; then
+      print_warning "Dry-run: reiniciaria os serviços: ${servicos}"
+      return 0
+    fi
+
+    print_header "Reinício Seletivo"
+    _reiniciar_servicos "$ssh_cmd" "$host" "$servicos"
+    return $?
+  fi
+
+  if [[ "${SYNC_POST_RUN:-false}" != "true" ]]; then
+    print_info "Nenhuma ação pós-sincronização configurada (SYNC_POST_RUN não definido)"
+    return 0
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_warning "Dry-run: pulando pós-sincronização"
+    print_info "Seria executado: cd '${REMOTE_BASE_PATH}' && ./deploy-run"
+    return 0
+  fi
+
+  print_header "Pós-Sincronização"
+  print_info "Executando ./deploy-run no servidor remoto..."
+
+  if $ssh_cmd "$host" "cd '${REMOTE_BASE_PATH}' && ./deploy-run"; then
+    print_success "deploy-run executado com sucesso"
+  else
+    print_error "Falha ao executar deploy-run"
+    return 1
+  fi
+}
+
+################################################################################
+# Principal
+################################################################################
+
+main() {
+  if ! command -v ssh >/dev/null 2>&1; then
+    print_error "ssh não encontrado"
+    exit 1
+  fi
+
+  parse_arguments "$@"
+  load_env_file
+  show_configuration
+
+  local SSH_CMD
+  SSH_CMD=$(build_ssh_command)
+
+  check_ssh_connectivity "$SSH_CMD" "$REMOTE_HOST" || exit 1
+  check_or_create_remote_directory "$SSH_CMD" "$REMOTE_HOST" "$REMOTE_BASE_PATH" || exit 1
+  sync_files "$SSH_CMD" "$REMOTE_HOST" "$LOCAL_DIR" "$REMOTE_BASE_PATH" || exit 1
+  apply_permissions "$SSH_CMD" "$REMOTE_HOST" "$REMOTE_BASE_PATH"
+  copy_env_file "$SSH_CMD" "$REMOTE_HOST" "$REMOTE_BASE_PATH" || exit 1
+  execute_post_sync "$SSH_CMD" "$REMOTE_HOST"
+
+  print_header "Sincronização Finalizada"
+  print_success "Processo concluído com sucesso!"
+}
+
+main "$@"

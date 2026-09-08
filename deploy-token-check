@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+################################################################################
+# deploy-token-check — diagnostica o PERSONAL_ACCESS_TOKEN do pipeline
+#
+# Testa, uma a uma, as quatro capacidades que o build precisa. Em vez de "o
+# build falhou", responde QUAL delas falta.
+#
+# Existe porque o modo de falha mais comum é colar o token errado: o do GHCR
+# (`read:packages`) tem cara de válido, autentica com 200, e derruba todos os
+# builds com 403/404 no `git clone` — longe da causa.
+#
+# Uso: ./deploy-token-check          cola o token no prompt (não fica no histórico)
+#
+# Só lê, com duas exceções inofensivas: publica um commit status de teste e
+# dispara um repository_dispatch que nenhum workflow escuta.
+################################################################################
+
+readonly RED='\033[0;31m'; readonly GREEN='\033[0;32m'; readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'; readonly CYAN='\033[0;36m'; readonly NC='\033[0m'
+print_error()   { echo -e "${RED}[ERRO]${NC} $*" >&2; }
+print_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
+print_step()    { echo -e "${CYAN}[>>]${NC} $*"; }
+
+[[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { sed -n '5,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+
+# ─── Descoberta: dono e repositórios saem dos remotes, nada hardcoded ─────────
+
+_slug_from_remote() {   # → dono/repo
+  local dir="$1" url
+  url=$(git -C "$dir" remote get-url origin 2>/dev/null) || return 0
+  echo "$url" | sed -E 's#^git@[^:]+:##; s#^https?://[^/]+/##; s#\.git$##'
+}
+
+DEPLOY_SLUG=$(_slug_from_remote .)
+[[ -n "$DEPLOY_SLUG" ]] || { print_error "sem remote origin aqui — rode na raiz do projeto de deploy"; exit 1; }
+OWNER="${DEPLOY_SLUG%%/*}"
+
+CODE_SLUGS=()
+for d in code/*/; do
+  [[ -d "$d/.git" ]] || continue
+  s=$(_slug_from_remote "$d")
+  [[ -n "$s" ]] && CODE_SLUGS+=("$s")
+done
+[[ ${#CODE_SLUGS[@]} -gt 0 ]] || print_info "nenhum repo em code/ com remote — o teste 3 será pulado"
+
+# ─── Entrada ─────────────────────────────────────────────────────────────────
+
+# ⚠️ `read -rs "?prompt"` é sintaxe do zsh. Em bash o prompt vira nome de
+#    variável e a leitura falha em silêncio, com o token vazio dando 401 em tudo.
+printf 'Cole o token: ' >&2
+read -rs PAT
+echo
+[[ -n "$PAT" ]] || { print_error "nenhum token informado"; exit 1; }
+
+GH_API=(-H "Authorization: token $PAT" -H "Accept: application/vnd.github+json")
+_code() { curl -s -o /dev/null -w "%{http_code}" "${GH_API[@]}" "$@"; }
+
+FAIL=0
+
+# ─── 1. Que token é este? ────────────────────────────────────────────────────
+
+print_step "1) Que token é este?"
+SCOPES=$(curl -sI "${GH_API[@]}" https://api.github.com/user \
+         | tr -d '\r' | sed -n 's/^[Xx]-[Oo][Aa]uth-[Ss]copes: *//p')
+if [[ -z "$SCOPES" ]]; then
+  echo "   fine-grained (sem x-oauth-scopes)"
+elif [[ "$SCOPES" == "read:packages" ]]; then
+  print_error "clássico com escopo '$SCOPES' — este é o token do GHCR (REGISTRY_TOKEN),"
+  echo "        não o PERSONAL_ACCESS_TOKEN. Ele não enxerga repositório privado."
+  FAIL=1
+else
+  echo "   clássico — escopos: $SCOPES"
+fi
+
+# ─── 2. Enxerga a organização? ───────────────────────────────────────────────
+
+print_step "2) Enxerga a organização $OWNER?"
+c=$(_code "https://api.github.com/orgs/$OWNER")
+if [[ "$c" == "200" ]]; then echo "   HTTP $c ✅"
+else
+  echo "   HTTP $c ❌ — token criado no dono errado? O resource owner tem que ser $OWNER"
+  FAIL=1
+fi
+
+# ─── 3. Lê os repositórios de código? (checkout) ─────────────────────────────
+
+print_step "3) Consegue LER cada repositório de código? (necessário para o checkout)"
+for slug in "${CODE_SLUGS[@]}"; do
+  c=$(_code "https://api.github.com/repos/$slug")
+  case "$c" in
+    200) s="✅" ;;
+    404) s="❌ o token não enxerga este repo (privado sem Contents:read)"; FAIL=1 ;;
+    403) s="❌ sem Contents:read"; FAIL=1 ;;
+    *)   s="❌"; FAIL=1 ;;
+  esac
+  printf "   %-32s HTTP %-4s %s\n" "${slug#*/}" "$c" "$s"
+done
+
+# ─── 4. Publica commit status? (o report do build) ───────────────────────────
+
+print_step "4) Consegue publicar commit status? (o report do build)"
+PROBE="${CODE_SLUGS[0]:-}"
+if [[ -z "$PROBE" ]]; then
+  echo "   — pulado, nenhum repo de código encontrado"
+else
+  SHA=$(curl -s "${GH_API[@]}" "https://api.github.com/repos/$PROBE/commits/main" \
+        | python3 -c 'import json,sys;print(json.load(sys.stdin).get("sha",""))' 2>/dev/null)
+  if [[ -z "$SHA" ]]; then
+    echo "   ❌ nem consegui ler o commit — o teste 3 já falhou"
+    FAIL=1
+  else
+    c=$(_code -X POST "https://api.github.com/repos/$PROBE/statuses/$SHA" \
+        -d '{"state":"success","context":"_teste-permissao","description":"teste de permissao"}')
+    if [[ "${c:0:1}" == "2" ]]; then echo "   HTTP $c ✅  (em $PROBE)"
+    else echo "   HTTP $c ❌ falta statuses:write (fine-grained) ou repo:status (clássico)"; FAIL=1; fi
+  fi
+fi
+
+# ─── 5. Dispara o deploy? ────────────────────────────────────────────────────
+
+print_step "5) Consegue disparar repository_dispatch no repo de deploy?"
+c=$(_code -X POST "https://api.github.com/repos/$DEPLOY_SLUG/dispatches" \
+    -d '{"event_type":"_teste-permissao"}')
+if [[ "$c" == "204" ]]; then echo "   HTTP $c ✅"
+else
+  echo "   HTTP $c ❌ falta Contents:write em $DEPLOY_SLUG (ou o escopo repo, se clássico)"
+  FAIL=1
+fi
+
+echo
+echo "───────────────────────────────────────────────"
+if [[ $FAIL -eq 0 ]]; then
+  echo -e "${GREEN}Token apto${NC} — pode subir com: gh secret set PERSONAL_ACCESS_TOKEN --repo $DEPLOY_SLUG"
+else
+  echo -e "${YELLOW}Esperado:${NC} 2) 200   3) todos 200   4) 2xx   5) 204"
+  exit 1
+fi

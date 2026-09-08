@@ -1,0 +1,634 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# init-mutagen
+#
+# Objetivo:
+# - Automatizar o bootstrap, diagnostico e recuperacao do Mutagen para este
+#   projeto sem interferir em outras sessoes da maquina.
+#
+# Como funciona:
+# - Le o arquivo mutagen.yml da raiz do projeto.
+# - Descobre automaticamente o nome da primeira sessao declarada em `sync:`,
+#   bem como o `alpha` local e o `beta` remoto.
+# - Valida o daemon do Mutagen e tenta recupera-lo se estiver travado.
+# - Valida a conectividade SSH com o host remoto definido no `beta`.
+# - Garante que o diretorio remoto exista com `mkdir -p`.
+# - Lista e remove apenas sessoes duplicadas que apontem exatamente para o
+#   mesmo alpha local e o mesmo beta remoto deste projeto.
+# - Exibe o status detalhado da sessao ao final dos fluxos principais.
+#
+# Comandos principais:
+# - ./init-mutagen doctor
+#   Executa um diagnostico completo sem forcar reinicio da sessao.
+# - ./init-mutagen start
+#   Faz as verificacoes, cria o path remoto se necessario e sobe o projeto.
+# - ./init-mutagen restart
+#   Encerra o projeto, limpa locks stale, valida o remoto e sobe novamente.
+# - ./init-mutagen stop
+#   Tenta encerrar o projeto atual via Mutagen.
+# - ./init-mutagen status
+#   Mostra sessoes relacionadas ao projeto e o monitor detalhado.
+# - ./init-mutagen clean
+#   Limpa socket/locks stale locais e recupera o daemon.
+# - ./init-mutagen dedupe
+#   Remove apenas sessoes duplicadas com o mesmo alpha/beta deste projeto.
+#
+# Garantias de isolamento:
+# - O script nao usa nomes genericos para matar ou terminar sessoes de outros
+#   projetos deliberadamente.
+# - A deduplicacao so atua em sessoes cujo alpha e beta sejam identicos aos do
+#   projeto atual carregado do mutagen.yml.
+# -----------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR"
+MUTAGEN_YML="$PROJECT_ROOT/mutagen.yml"
+PROJECT_LOCK="$PROJECT_ROOT/mutagen.yml.lock"
+MUTAGEN_HOME="${HOME}/.mutagen"
+MUTAGEN_DAEMON_DIR="${MUTAGEN_HOME}/daemon"
+MUTAGEN_DAEMON_SOCK="${MUTAGEN_DAEMON_DIR}/daemon.sock"
+MUTAGEN_DAEMON_LOCK="${MUTAGEN_DAEMON_DIR}/daemon.lock"
+
+COMMAND="${1:-start}"
+
+# Escreve mensagens informativas padronizadas no stdout.
+log() {
+    printf '[init-mutagen] %s\n' "$*"
+}
+
+# Escreve avisos padronizados no stderr.
+warn() {
+    printf '[init-mutagen][warn] %s\n' "$*" >&2
+}
+
+# Escreve erro padronizado no stderr e encerra o script.
+fail() {
+    printf '[init-mutagen][error] %s\n' "$*" >&2
+    exit 1
+}
+
+# Garante que um binario obrigatorio esteja disponivel no PATH.
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || fail "Comando ausente: $1"
+}
+
+# Valida se o arquivo mutagen.yml existe na raiz do projeto.
+ensure_config_exists() {
+    [ -f "$MUTAGEN_YML" ] || fail "Arquivo não encontrado: $MUTAGEN_YML"
+}
+
+# Normaliza valores YAML simples no formato "chave: valor", aceitando aspas
+# simples, duplas ou ausencia de aspas.
+normalize_yaml_scalar() {
+    local value="$1"
+
+    value="${value#*:}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+        value="${value#\"}"
+        value="${value%\"}"
+    elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+        value="${value#\'}"
+        value="${value%\'}"
+    fi
+
+    printf '%s\n' "$value"
+}
+
+# Carrega dinamicamente do mutagen.yml o nome do projeto, alpha e beta.
+# Isso evita hardcode do host remoto e do path sincronizado.
+load_project_config() {
+    ensure_config_exists
+
+    PROJECT_NAME="$(awk '
+        /^sync:/ { in_sync=1; next }
+        !in_sync { next }
+        /^  defaults:/ { next }
+        /^  [A-Za-z0-9._-]+:/ {
+            key=$1
+            sub(/:$/, "", key)
+            print key
+            exit
+        }
+    ' "$MUTAGEN_YML")"
+
+    [ -n "${PROJECT_NAME:-}" ] || fail "Nao foi possivel identificar o nome do projeto em mutagen.yml"
+
+    ALPHA_PATH="$(awk -v project="$PROJECT_NAME" '
+        $0 ~ "^  " project ":" { in_block=1; next }
+        in_block && /^  [A-Za-z0-9._-]+:/ { exit }
+        in_block && /^[[:space:]]+alpha:/ {
+            print $0
+            exit
+        }
+    ' "$MUTAGEN_YML")"
+
+    BETA_URL="$(awk -v project="$PROJECT_NAME" '
+        $0 ~ "^  " project ":" { in_block=1; next }
+        in_block && /^  [A-Za-z0-9._-]+:/ { exit }
+        in_block && /^[[:space:]]+beta:/ {
+            print $0
+            exit
+        }
+    ' "$MUTAGEN_YML")"
+
+    ALPHA_PATH="$(normalize_yaml_scalar "$ALPHA_PATH")"
+    BETA_URL="$(normalize_yaml_scalar "$BETA_URL")"
+
+    [ -n "${ALPHA_PATH:-}" ] || fail "Nao foi possivel identificar o alpha em mutagen.yml"
+    [ -n "${BETA_URL:-}" ] || fail "Nao foi possivel identificar o beta em mutagen.yml"
+
+    if [[ "$ALPHA_PATH" == "." ]]; then
+        ALPHA_PATH="$PROJECT_ROOT"
+    elif [[ "$ALPHA_PATH" != /* ]]; then
+        ALPHA_PATH="$PROJECT_ROOT/$ALPHA_PATH"
+    fi
+
+    if [[ "$BETA_URL" != *:* ]]; then
+        fail "Formato beta invalido em mutagen.yml: $BETA_URL"
+    fi
+
+    REMOTE_HOST="${BETA_URL%%:*}"
+    REMOTE_PATH="${BETA_URL#*:}"
+    REMOTE_PATH="${REMOTE_PATH%/}"
+    REMOTE_PARENT="$(dirname "$REMOTE_PATH")"
+}
+
+# Exibe o resumo da configuracao carregada do projeto atual.
+show_loaded_config() {
+    log "Projeto Mutagen: $PROJECT_NAME"
+    log "Alpha local: $ALPHA_PATH"
+    log "Beta remoto: $REMOTE_HOST:$REMOTE_PATH"
+}
+
+# Wrapper simples para o binario mutagen, facilitando futura centralizacao.
+run_mutagen() {
+    mutagen "$@"
+}
+
+# Considera o daemon saudavel quando um comando simples do Mutagen responde.
+daemon_is_healthy() {
+    if run_mutagen sync list >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+# Tenta subir o daemon do Mutagen sem falhar imediatamente.
+# Em seguida valida se ele ficou realmente responsivo.
+start_daemon() {
+    log "Garantindo daemon do Mutagen"
+    mkdir -p "$MUTAGEN_DAEMON_DIR"
+    run_mutagen daemon start >/dev/null 2>&1 || true
+
+    if daemon_is_healthy; then
+        log "Daemon do Mutagen responsivo"
+        return 0
+    fi
+
+    warn "Daemon nao respondeu apos tentativa de start"
+    return 1
+}
+
+# Encerra processos mutagen travados localmente.
+# Isso e usado apenas em recuperacao agressiva de daemon.
+kill_mutagen_processes() {
+    if pgrep -f '[m]utagen' >/dev/null 2>&1; then
+        warn "Encerrando processos mutagen travados"
+        pkill -f '[m]utagen' || true
+        sleep 1
+    fi
+}
+
+# Remove arquivos de runtime stale do daemon e lock local do projeto.
+# Nao apaga sessoes do Mutagen nem interfere em outros projetos diretamente.
+remove_stale_runtime_files() {
+    local removed=0
+
+    if [ -S "$MUTAGEN_DAEMON_SOCK" ] || [ -e "$MUTAGEN_DAEMON_SOCK" ]; then
+        rm -f "$MUTAGEN_DAEMON_SOCK"
+        removed=1
+        warn "Socket antigo removido: $MUTAGEN_DAEMON_SOCK"
+    fi
+
+    if [ -f "$MUTAGEN_DAEMON_LOCK" ]; then
+        rm -f "$MUTAGEN_DAEMON_LOCK"
+        removed=1
+        warn "Lock antigo removido: $MUTAGEN_DAEMON_LOCK"
+    fi
+
+    if [ -f "$PROJECT_LOCK" ]; then
+        rm -f "$PROJECT_LOCK"
+        removed=1
+        warn "Lock do projeto removido: $PROJECT_LOCK"
+    fi
+
+    if [ "$removed" -eq 0 ]; then
+        log "Nenhum socket/lock stale encontrado"
+    fi
+}
+
+# Fluxo completo de recuperacao do daemon:
+# - tenta start normal
+# - se falhar, mata processos travados
+# - remove socket/locks stale
+# - sobe o daemon novamente e valida resposta
+recover_daemon() {
+    if start_daemon; then
+        return 0
+    fi
+
+    warn "Iniciando recuperacao agressiva do daemon"
+    kill_mutagen_processes
+    remove_stale_runtime_files
+    run_mutagen daemon start >/dev/null 2>&1 || true
+    sleep 1
+
+    daemon_is_healthy || fail "Daemon do Mutagen continua indisponivel apos recuperacao"
+    log "Daemon recuperado com sucesso"
+}
+
+# Garante que o path alpha local exista antes de qualquer operacao.
+verify_local_alpha() {
+    [ -d "$ALPHA_PATH" ] || fail "Diretorio alpha nao existe: $ALPHA_PATH"
+}
+
+# Valida se a maquina consegue autenticar e conectar no host remoto via SSH.
+verify_remote_connectivity() {
+    log "Validando conectividade SSH com $REMOTE_HOST"
+    ssh -o BatchMode=yes -o ConnectTimeout=10 "$REMOTE_HOST" "printf ok" >/dev/null
+}
+
+# Garante a existencia do diretorio pai remoto do root sincronizado.
+ensure_remote_parent_exists() {
+    log "Garantindo diretorio remoto pai: $REMOTE_PARENT"
+    ssh "$REMOTE_HOST" "mkdir -p '$REMOTE_PARENT'"
+}
+
+# Garante a existencia do diretorio root remoto usado pelo Mutagen.
+ensure_remote_root_exists() {
+    log "Garantindo diretorio remoto raiz: $REMOTE_PATH"
+    ssh "$REMOTE_HOST" "mkdir -p '$REMOTE_PATH'"
+}
+
+# Retorna sucesso quando o diretorio root remoto ja existe.
+remote_root_exists() {
+    ssh "$REMOTE_HOST" "[ -d '$REMOTE_PATH' ]"
+}
+
+# Exibe o monitor detalhado apenas da sessao cujo nome bate com o projeto atual.
+print_project_status() {
+    log "Status do projeto atual"
+    run_mutagen sync monitor --long "$PROJECT_NAME" || true
+}
+
+# Busca os identifiers de sessoes que apontem exatamente para o alpha local e
+# para o beta remoto do projeto atual. Essa funcao e a base da deduplicacao
+# segura, para nao tocar em outros projetos da maquina.
+find_matching_session_ids() {
+    run_mutagen sync list --long 2>/dev/null | awk -v alpha="$ALPHA_PATH" -v beta_host="$REMOTE_HOST" -v beta_path="$REMOTE_PATH" '
+        BEGIN {
+            in_alpha=0
+            in_beta=0
+            identifier=""
+            alpha_match=0
+            beta_match=0
+        }
+        /^Name:/ {
+            in_alpha=0
+            in_beta=0
+            identifier=""
+            alpha_match=0
+            beta_match=0
+            next
+        }
+        /^Identifier:/ {
+            identifier=$2
+            next
+        }
+        /^Alpha:/ {
+            in_alpha=1
+            in_beta=0
+            next
+        }
+        /^Beta:/ {
+            in_alpha=0
+            in_beta=1
+            next
+        }
+        /^[A-Za-z]/ {
+            in_alpha=0
+            in_beta=0
+        }
+        /^[[:space:]]+URL:[[:space:]]*/ {
+            url=$0
+            sub(/^[[:space:]]+URL:[[:space:]]*/, "", url)
+            if (in_alpha && url == alpha) {
+                alpha_match=1
+            }
+            if (in_beta && url == beta_host ":" beta_path "/") {
+                beta_match=1
+            }
+            next
+        }
+        /^Status:/ {
+            if (identifier != "" && alpha_match && beta_match) {
+                print identifier
+            }
+            in_alpha=0
+            in_beta=0
+            identifier=""
+            alpha_match=0
+            beta_match=0
+            next
+        }
+    '
+}
+
+# Conta quantas sessoes do Mutagen casam exatamente com este alpha/beta.
+count_matching_sessions() {
+    find_matching_session_ids | awk 'NF { count++ } END { print count+0 }'
+}
+
+# Lista sessoes relacionadas ao projeto atual com base no alpha e beta atuais.
+# Serve para diagnostico e para mostrar o contexto antes/depois de deduplicar.
+list_matching_sessions() {
+    log "Sessoes relacionadas ao projeto atual"
+    run_mutagen sync list --long 2>/dev/null | awk -v alpha="$ALPHA_PATH" -v beta_host="$REMOTE_HOST" -v beta_path="$REMOTE_PATH" '
+        BEGIN { keep=0; printed=0 }
+        /^Name:/ { block=$0 ORS; keep=0; next }
+        /^Identifier:/ { block=block $0 ORS; next }
+        /^Alpha:/ { block=block $0 ORS; section="alpha"; next }
+        /^Beta:/ { block=block $0 ORS; section="beta"; next }
+        /^        URL:/ {
+            block=block $0 ORS
+            url=$0
+            sub(/^[[:space:]]+URL:[[:space:]]*/, "", url)
+            if (url == alpha) keep=1
+            if (url == beta_host ":" beta_path "/") keep=1
+            next
+        }
+        /^Status:/ {
+            block=block $0 ORS
+            if (keep) {
+                printf "%s\n", block
+                printed=1
+            }
+            block=""
+            keep=0
+            next
+        }
+        { block=block $0 ORS }
+        END {
+            if (!printed) {
+                print "Nenhuma sessao correspondente encontrada."
+            }
+        }
+    '
+}
+
+# Remove apenas sessoes duplicadas do projeto atual.
+# Mantem a ultima sessao detectada e encerra as demais, sempre limitando a
+# mesma combinacao exata de alpha local e beta remoto.
+dedupe_matching_sessions() {
+    local session_ids=()
+    local count
+    local keep_id
+    local id
+    local kept=0
+
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        session_ids+=("$id")
+    done < <(find_matching_session_ids)
+
+    count="${#session_ids[@]}"
+
+    if [ "$count" -le 1 ]; then
+        log "Nenhuma sessao duplicada encontrada para este projeto"
+        return 0
+    fi
+
+    keep_id="${session_ids[$((count - 1))]}"
+    warn "Foram encontradas $count sessoes para o mesmo alpha/beta deste projeto"
+    log "Mantendo a sessao mais recente detectada: $keep_id"
+
+    for id in "${session_ids[@]}"; do
+        if [ "$id" = "$keep_id" ] && [ "$kept" -eq 0 ]; then
+            kept=1
+            continue
+        fi
+
+        warn "Encerrando sessao duplicada: $id"
+        run_mutagen sync terminate "$id" >/dev/null 2>&1 || warn "Falha ao encerrar sessao duplicada $id"
+    done
+}
+
+# Tenta encerrar o projeto atual pelo comando de projeto do Mutagen.
+terminate_project() {
+    log "Tentando encerrar projeto Mutagen"
+    run_mutagen project terminate >/dev/null 2>&1 || warn "Nao foi possivel encerrar o projeto via Mutagen"
+}
+
+# Sobe o projeto Mutagen usando o mutagen.yml atual.
+# Se houver lock stale local do projeto, remove e tenta novamente.
+start_project() {
+    log "Iniciando projeto Mutagen"
+    if run_mutagen project start; then
+        return 0
+    fi
+
+    warn "Falha no project start; tentando limpar lock local e reiniciar"
+    [ -f "$PROJECT_LOCK" ] && rm -f "$PROJECT_LOCK"
+    run_mutagen project start
+}
+
+# Solicita flush da sessao atual para forcar aplicacao das transicoes pendentes.
+flush_project() {
+    log "Solicitando flush da sessao atual"
+    run_mutagen sync flush "$PROJECT_NAME" || warn "Nao foi possivel fazer flush da sessao $PROJECT_NAME"
+}
+
+# Detecta o caso comum de symlink absoluto em public/storage, que aparece como
+# Scan problems no Mutagen em varios projetos Laravel/PHP.
+warn_absolute_symlink_issue() {
+    if [ -L "$ALPHA_PATH/public/storage" ]; then
+        local target
+        target="$(readlink "$ALPHA_PATH/public/storage" || true)"
+        if [[ "$target" == /* ]]; then
+            warn "public/storage aponta para alvo absoluto ($target). Isso aparece como Scan problems no Mutagen."
+        fi
+    fi
+}
+
+# Executa um diagnostico completo sem alterar agressivamente a sessao do projeto.
+# Ele valida daemon, SSH, existencia do remoto, problemas conhecidos e status.
+doctor() {
+    load_project_config
+    show_loaded_config
+    verify_local_alpha
+    recover_daemon
+    verify_remote_connectivity
+    if remote_root_exists; then
+        log "Diretorio remoto ja existe"
+    else
+        warn "Diretorio remoto nao existe: $REMOTE_PATH"
+        ensure_remote_parent_exists
+        ensure_remote_root_exists
+    fi
+    warn_absolute_symlink_issue
+    list_matching_sessions
+    print_project_status
+    local count
+    count="$(count_matching_sessions)"
+    if [ "$count" -gt 1 ]; then
+        warn "Ha $count sessoes apontando para o mesmo alpha/beta. Use './init-mutagen dedupe' para limpar sem afetar outros projetos."
+    fi
+}
+
+# Fluxo padrao de subida:
+# - carrega config
+# - valida daemon e remoto
+# - cria diretorio remoto
+# - remove duplicatas estritamente relacionadas a este projeto
+# - sobe o projeto e faz flush
+start_flow() {
+    load_project_config
+    show_loaded_config
+    verify_local_alpha
+    recover_daemon
+    verify_remote_connectivity
+    ensure_remote_parent_exists
+    ensure_remote_root_exists
+    dedupe_matching_sessions
+    warn_absolute_symlink_issue
+    start_project
+    dedupe_matching_sessions
+    flush_project
+    print_project_status
+}
+
+# Fluxo de reinicio:
+# - recupera daemon
+# - tenta terminar o projeto
+# - limpa locks/sockets stale
+# - revalida remoto
+# - deduplica sessoes iguais deste projeto
+# - sobe novamente e mostra status
+restart_flow() {
+    load_project_config
+    show_loaded_config
+    recover_daemon
+    terminate_project
+    remove_stale_runtime_files
+    recover_daemon
+    verify_remote_connectivity
+    ensure_remote_parent_exists
+    ensure_remote_root_exists
+    dedupe_matching_sessions
+    start_project
+    dedupe_matching_sessions
+    flush_project
+    print_project_status
+}
+
+# Fluxo de parada simples do projeto atual.
+stop_flow() {
+    load_project_config
+    show_loaded_config
+    recover_daemon
+    terminate_project
+    print_project_status
+}
+
+# Mostra sessoes relacionadas e o monitor detalhado do projeto atual.
+status_flow() {
+    load_project_config
+    show_loaded_config
+    recover_daemon
+    list_matching_sessions
+    print_project_status
+}
+
+# Limpeza local do runtime do daemon, sem apagar sessoes de forma cega.
+clean_flow() {
+    load_project_config
+    show_loaded_config
+    warn "Executando limpeza local de runtime e locks do Mutagen"
+    kill_mutagen_processes
+    remove_stale_runtime_files
+    recover_daemon
+    log "Limpeza concluida"
+}
+
+# Remove somente sessoes duplicadas que casem exatamente com alpha/beta atuais.
+dedupe_flow() {
+    load_project_config
+    show_loaded_config
+    recover_daemon
+    list_matching_sessions
+    dedupe_matching_sessions
+    list_matching_sessions
+}
+
+# Exibe a ajuda resumida de uso.
+usage() {
+    cat <<'EOF'
+Uso: ./init-mutagen [comando]
+
+Comandos:
+  start    Verifica ambiente, cria path remoto se necessario e executa project start
+  restart  Encerra o projeto, limpa locks stale, valida remoto e sobe novamente
+  stop     Tenta encerrar o projeto Mutagen atual
+  status   Mostra sessoes relacionadas ao projeto e o monitor detalhado
+  doctor   Executa diagnostico completo sem focar em reinicio da sessao
+  clean    Limpa sockets/locks stale locais e recupera o daemon
+  dedupe   Remove apenas sessoes duplicadas com o mesmo alpha/beta deste projeto
+  help     Exibe esta ajuda
+EOF
+}
+
+main() {
+    require_command mutagen
+    require_command ssh
+    require_command awk
+    require_command pgrep
+    require_command pkill
+
+    case "$COMMAND" in
+        start)
+            start_flow
+            ;;
+        restart)
+            restart_flow
+            ;;
+        stop)
+            stop_flow
+            ;;
+        status)
+            status_flow
+            ;;
+        doctor)
+            doctor
+            ;;
+        clean)
+            clean_flow
+            ;;
+        dedupe)
+            dedupe_flow
+            ;;
+        help|-h|--help)
+            usage
+            ;;
+        *)
+            usage
+            fail "Comando invalido: $COMMAND"
+            ;;
+    esac
+}
+
+main "$@"

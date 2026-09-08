@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+################################################################################
+# envedit — edita um arquivo de ambiente criptografado com SOPS
+#
+# Existe porque o SOPS identifica o formato pela extensão, e `.env.prd` não é
+# uma extensão que ele reconheça — sem `--input-type dotenv` ele trata o arquivo
+# como binário, cifra tudo num blob só e ignora o unencrypted_regex (o que
+# quebraria o deploy-sync, que precisa ler REMOTE_HOST em texto puro).
+#
+# Uso:
+#   ./envedit                 edita .env.prd
+#   ./envedit dev             edita .env.dev
+#   ./envedit api             edita .envs/api.env.prd
+#   ./envedit api dev         edita .envs/api.env.dev
+#   ./envedit --show api      imprime decriptado no stdout (não salve em arquivo!)
+#   ./envedit --set K V       grava uma chave sem abrir editor (para rotação em lote)
+#   ./envedit --check         procura segredo em TEXTO PURO nos envs (rode antes do commit)
+#   ./envedit --updatekeys    reaplica os destinatários do .sops.yaml em TODOS os envs
+#   ./envedit --init          criptografa pela primeira vez os envs em texto puro
+################################################################################
+
+readonly RED='\033[0;31m'; readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'; readonly BLUE='\033[0;34m'; readonly NC='\033[0m'
+print_error()   { echo -e "${RED}[ERRO]${NC} $*" >&2; }
+print_success() { echo -e "${GREEN}[OK]${NC} $*"; }
+print_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
+print_warning() { echo -e "${YELLOW}[AVISO]${NC} $*"; }
+
+readonly SOPS_FLAGS=(--input-type dotenv --output-type dotenv)
+
+# A chave age fica em local diferente por SO: no macOS o sops usa
+# ~/Library/Application Support, no Linux ~/.config. Resolve os dois.
+resolve_age_key() {
+  [[ -n "${SOPS_AGE_KEY_FILE:-}" && -f "${SOPS_AGE_KEY_FILE}" ]] && return 0
+  local c
+  for c in "$HOME/Library/Application Support/sops/age/keys.txt" \
+           "${XDG_CONFIG_HOME:-$HOME/.config}/sops/age/keys.txt"; do
+    if [[ -f "$c" ]]; then export SOPS_AGE_KEY_FILE="$c"; return 0; fi
+  done
+  print_error "Chave age não encontrada. Gere com:"
+  echo "    age-keygen -o \"\$HOME/Library/Application Support/sops/age/keys.txt\"" >&2
+  return 1
+}
+
+SHOW=false
+INIT=false
+CHECK=false
+UPDATEKEYS=false
+SET_KEY=""
+SET_VALUE=""
+DO_SET=false
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --set)
+      [[ $# -ge 3 ]] || { print_error "uso: ./envedit --set CHAVE VALOR [arquivo]"; exit 1; }
+      DO_SET=true; SET_KEY="$2"; SET_VALUE="$3"; shift 3 ;;
+    --show)  SHOW=true; shift ;;
+    --init)  INIT=true; shift ;;
+    --check) CHECK=true; shift ;;
+    --updatekeys) UPDATEKEYS=true; shift ;;
+    -h|--help) sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+
+[[ -f .sops.yaml ]] || { print_error "Rode na raiz do projeto (.sops.yaml não encontrado)."; exit 1; }
+command -v sops >/dev/null 2>&1 || { print_error "sops não instalado: brew install sops age"; exit 1; }
+resolve_age_key || exit 1
+
+# ─── --updatekeys: reaplica os destinatários ──────────────────────────────────
+#
+# Editar o .sops.yaml NÃO re-criptografa nada. Sem este passo, uma chave nova não
+# abre arquivo nenhum e uma chave removida continua abrindo tudo.
+#
+# ⚠️ O `sops updatekeys` também precisa de --input-type dotenv: sem ele falha com
+#    "Could not unmarshal input data: invalid character '#'". É a mesma pegadinha
+#    que motivou este wrapper.
+#
+# ⚠️ Você precisa de uma chave AINDA VÁLIDA para rodar: o SOPS desembrulha a
+#    chave de dados do arquivo e a re-embrulha para a lista nova.
+
+if [[ "$UPDATEKEYS" == true ]]; then
+  print_info "Reaplicando os destinatários de .sops.yaml em todos os envs..."
+  ok=0; falhou=0
+  shopt -s nullglob
+  for f in .env.prd .env.dev .env.stg .envs/*.env.* .docker-stand-alone/*/*/.env.*; do
+    [[ -f "$f" && -s "$f" ]] || continue
+    grep -q '^sops_version=' "$f" 2>/dev/null || continue
+    if sops updatekeys --yes --input-type dotenv "$f" >/dev/null 2>&1; then
+      print_success "$f"; ok=$((ok+1))
+    else
+      print_error "falhou: $f"; falhou=$((falhou+1))
+    fi
+  done
+  shopt -u nullglob
+  echo
+  print_info "${ok} atualizado(s), ${falhou} com falha."
+  [[ "$falhou" -gt 0 ]] && exit 1
+  print_warning "Confira o diff e commite: git diff --stat"
+  exit 0
+fi
+
+# ─── Valores hostis ao shell ─────────────────────────────────────────────────
+#
+# ⚠️ O deploy-run faz `set -o allexport; source .env`. Em bash, valor entre
+#    ASPAS DUPLAS sofre expansão: `crase` vira execução de comando e $VAR vira
+#    substituição. O valor que chega no container NÃO é o que está no arquivo.
+#
+#    Pego em 2026-08-25: 5 dos 8 salts do WordPress tinham crase. Gerador de
+#    senha/salt adora pontuação, e é justamente ela que quebra aqui.
+#
+#    Aviso, não bloqueio: `${VAR}` é interpolação legítima em alguns envs.
+
+_avisar_hostis_ao_shell() {
+  local f="$1" conteudo
+  # Só o env de INFRA é lido pelo bash. Os de .envs/ vão como arquivo para o
+  # container, onde o dotenv do Laravel interpola ${VAR} de propósito — avisar
+  # ali seria falso positivo em toda VITE_URL.
+  case "$f" in
+    .env.prd|.env.dev|.env.stg) ;;
+    *) return 0 ;;
+  esac
+  conteudo=$(sops -d "${SOPS_FLAGS[@]}" "$f" 2>/dev/null) || return 0
+  local achados
+  achados=$(printf '%s\n' "$conteudo" | python3 -c '
+import sys, re
+for linha in sys.stdin:
+    chave, sep, valor = linha.rstrip("\n").partition("=")
+    if not sep or chave.lstrip().startswith("#"):
+        continue
+    if valor[:1] == valor[-1:] == "\"":
+        valor = valor[1:-1]
+    motivos = []
+    if "`" in valor:
+        motivos.append("crase (vira execução de comando)")
+    if re.search(r"\$[A-Za-z_{]", valor):
+        motivos.append("$ expansível")
+    if "\\" in valor:
+        motivos.append("barra invertida")
+    if motivos:
+        print("  ⚠️  %s → %s" % (chave.strip(), ", ".join(motivos)))
+' 2>/dev/null) || return 0
+  [[ -n "$achados" ]] || return 0
+  echo >&2
+  print_warning "Valores que o \`source\` do deploy-run vai alterar em ${f}:"
+  printf '%s\n' "$achados" >&2
+  echo >&2
+  print_warning "  O container recebe um valor DIFERENTE do que está no arquivo."
+  print_warning "  Para segredo/salt, gere sem pontuação:"
+  print_warning "    openssl rand -base64 48 | tr -d '=+/' | cut -c1-64"
+  return 0
+}
+
+# ─── --check: caça segredo esquecido em texto puro ────────────────────────────
+#
+# Com mac_only_encrypted, editar um env no VS Code é permitido — o que abre a
+# porta para alguém adicionar um segredo à mão e ele ficar em claro para sempre,
+# sem nenhum aviso. Este check é a rede: rode antes do commit.
+
+if [[ "$CHECK" == true ]]; then
+  # Nomes que indicam segredo. VITE_* fica de fora: vai para o bundle público.
+  readonly SENSIVEL='^(APP_KEY|[A-Z0-9_]*(PASSWORD|SECRET|TOKEN|SALT|DSN)[A-Z0-9_]*|[A-Z0-9_]*_KEY|[A-Z0-9_]*_KEY_ID)='
+  achou=0
+  shopt -s nullglob
+  for f in .env.prd .env.dev .env.stg .envs/*.env.* .docker-stand-alone/*/*/.env.*; do
+    [[ -f "$f" ]] || continue
+    [[ -s "$f" ]] || continue
+    while IFS= read -r linha; do
+      chave="${linha%%=*}"
+      valor="${linha#*=}"
+      [[ "$valor" == ENC\[* ]] && continue          # já cifrado, ok
+      valor="${valor%\"}"; valor="${valor#\"}"
+      [[ -z "$valor" ]] && continue                  # vazio, ok (placeholder)
+      [[ "$chave" == VITE_* ]] && continue           # público por natureza
+      echo "  🔴 ${f}: ${chave} está em TEXTO PURO"
+      achou=1
+    done < <(grep -E "$SENSIVEL" "$f" 2>/dev/null || true)
+  done
+  shopt -u nullglob
+
+  if [[ "$achou" -eq 1 ]]; then
+    echo
+    print_error "Há segredo em texto puro. Corrija com ./envedit antes de commitar."
+    exit 1
+  fi
+  for f in .env.prd .env.dev .env.stg; do
+    [[ -f "$f" ]] && _avisar_hostis_ao_shell "$f"
+  done
+
+  print_success "Nenhum segredo em texto puro nos envs."
+  exit 0
+fi
+
+# ─── --init: primeira criptografia ────────────────────────────────────────────
+
+if [[ "$INIT" == true ]]; then
+  print_warning "Isto criptografa IN-PLACE os envs em texto puro deste projeto."
+  print_warning "O histórico do git continua com os valores antigos — rotacione depois."
+  echo
+  found=0
+  for f in .env.prd .env.dev .env.stg .envs/*.env.prd .envs/*.env.dev; do
+    [[ -f "$f" ]] || continue
+    if grep -q '^sops_version=' "$f" 2>/dev/null; then
+      print_info "já criptografado, pulando: $f"
+      continue
+    fi
+    sops -e "${SOPS_FLAGS[@]}" --in-place "$f"
+    print_success "criptografado: $f"
+    found=$((found+1))
+  done
+  [[ "$found" -eq 0 ]] && print_info "Nada a fazer."
+  exit 0
+fi
+
+# ─── Resolução do alvo ────────────────────────────────────────────────────────
+
+app=""; env_name="prd"
+case "${#ARGS[@]}" in
+  0) ;;
+  1) if [[ "${ARGS[0]}" =~ ^(dev|prd|stg)$ ]]; then env_name="${ARGS[0]}"; else app="${ARGS[0]}"; fi ;;
+  2) app="${ARGS[0]}"; env_name="${ARGS[1]}" ;;
+  *) print_error "Argumentos demais."; exit 1 ;;
+esac
+
+# Aceita tanto o nome curto ("api") quanto o caminho completo
+# (".envs/api.env.prd" ou "api.env.prd") — quem lê a listagem de erro tende a
+# copiar o caminho, e recusar isso é atrito à toa.
+if [[ "$app" == *.env.* || "$app" == */* ]]; then
+  file="${app#./}"
+  [[ "$file" != .envs/* && "$file" != .env.* ]] && file=".envs/${file}"
+elif [[ -n "$app" ]]; then
+  file=".envs/${app}.env.${env_name}"
+else
+  file=".env.${env_name}"
+fi
+
+if [[ ! -f "$file" ]]; then
+  print_error "Não existe: $file"
+  echo >&2
+  echo "Use o NOME CURTO do app, não o caminho:" >&2
+  echo >&2
+  shopt -s nullglob
+  for f in .envs/*.env.prd; do
+    nome="$(basename "$f")"; nome="${nome%%.env.*}"
+    printf "    ./envedit %-14s → %s\n" "$nome" "$f" >&2
+  done
+  shopt -u nullglob
+  for f in .env.prd .env.dev .env.stg; do
+    [[ -f "$f" ]] || continue
+    amb="${f#.env.}"
+    if [[ "$amb" == "prd" ]]; then
+      printf "    ./envedit %-14s → %s\n" "" "$f" >&2
+    else
+      printf "    ./envedit %-14s → %s\n" "$amb" "$f" >&2
+    fi
+  done
+  exit 1
+fi
+
+if [[ "$SHOW" == true ]]; then
+  exec sops -d "${SOPS_FLAGS[@]}" "$file"
+fi
+
+# ─── --set: grava sem abrir editor ───────────────────────────────────────────
+#
+# Existe para rotação em lote, onde abrir o editor oito vezes é convite a erro
+# de digitação. O valor NUNCA é impresso: nem em log, nem em confirmação.
+if [[ "$DO_SET" == true ]]; then
+  # O `sops set` recebe caminho e valor como JSON. Montar isso na mão quebra com
+  # aspas, barra e cifrão no valor — exatamente o que uma senha forte tem.
+  _caminho=$(SET_KEY="$SET_KEY" python3 -c 'import json,os; print(json.dumps([os.environ["SET_KEY"]]))')
+  _valor=$(SET_VALUE="$SET_VALUE" python3 -c 'import json,os; print(json.dumps(os.environ["SET_VALUE"]))')
+  if ! sops set "${SOPS_FLAGS[@]}" "$file" "$_caminho" "$_valor"; then
+    print_error "Falhou ao gravar ${SET_KEY} em ${file}."
+    exit 1
+  fi
+  print_success "${SET_KEY} gravada em ${file}."
+  _avisar_hostis_ao_shell "$file"
+  exit 0
+fi
+
+if [[ -z "${EDITOR:-}" ]] && command -v code >/dev/null 2>&1; then
+  print_info "Dica: export EDITOR=\"code --wait\" no seu shell abre no VS Code."
+fi
+print_info "Editando ${file} — ao salvar e fechar, o arquivo é criptografado."
+sops "${SOPS_FLAGS[@]}" "$file"
+
+# Rede de segurança: nunca deixar texto puro no arquivo versionado.
+if ! grep -q '^sops_version=' "$file" 2>/dev/null; then
+  print_error "ATENÇÃO: ${file} NÃO está criptografado. Não faça commit."
+  exit 1
+fi
+_avisar_hostis_ao_shell "$file"
+print_success "${file} salvo e criptografado."

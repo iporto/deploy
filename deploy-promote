@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+################################################################################
+# deploy-promote — libera em produção a imagem de um app
+#
+# Resolve o SHA a partir de origin/main, espera o build terminar se houver um em
+# andamento, confere que a imagem existe no registry e só então promove :prd.
+#
+# Existe porque o caminho manual tem três chances de errar: ler o SHA do HEAD
+# local estando numa branch de PR, promover antes do build terminar, e digitar
+# o SHA errado.
+#
+# Uso: ./deploy-promote AMBIENTE [APP] [sha-XXXX] [OPÇÕES]
+#
+#   ./deploy-promote prd api              resolve, espera, promove
+#   ./deploy-promote prd api sha-a1b2c3d  promove um SHA específico (rollback)
+#   ./deploy-promote prd api --check      só informa, não promove
+#   ./deploy-promote prd api --now        promove e aplica na hora, sem esperar o Watchtower
+#   ./deploy-promote prd --all            todos os apps do compose
+#   ./deploy-promote prd --status         quadro geral, sem promover nada
+################################################################################
+
+readonly RED='\033[0;31m'; readonly GREEN='\033[0;32m'; readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'; readonly CYAN='\033[0;36m'; readonly NC='\033[0m'
+print_error()   { echo -e "${RED}[ERRO]${NC} $*" >&2; }
+print_success() { echo -e "${GREEN}[OK]${NC} $*"; }
+print_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
+print_warning() { echo -e "${YELLOW}[AVISO]${NC} $*"; }
+print_step()    { echo -e "${CYAN}[>>]${NC} $*"; }
+
+ENV_TARGET=""; APP=""; SHA_ARG=""
+CHECK_ONLY=false; ALL=false; STATUS=false; NOW=false; WAIT_MAX=900
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check)   CHECK_ONLY=true; shift ;;
+    --now)     NOW=true; shift ;;
+    --all)     ALL=true; shift ;;
+    --status)  STATUS=true; shift ;;
+    --timeout) WAIT_MAX="$2"; shift 2 ;;
+    -h|--help) sed -n '5,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    sha-*)     SHA_ARG="$1"; shift ;;
+    dev|prd|stg) ENV_TARGET="$1"; shift ;;
+    -*)        print_error "opção desconhecida: $1"; exit 1 ;;
+    *)         [[ -z "$APP" ]] && APP="$1" || { print_error "argumento inesperado: $1"; exit 1; }; shift ;;
+  esac
+done
+
+[[ -n "$ENV_TARGET" ]] || { print_error "informe o ambiente. Ex.: ./deploy-promote prd api"; exit 1; }
+command -v gh >/dev/null 2>&1 || { print_error "gh CLI não encontrado"; exit 1; }
+
+COMPOSE="docker-compose.${ENV_TARGET}.yml"
+[[ -f "$COMPOSE" ]] || { print_error "não encontrei $COMPOSE — rode na raiz do projeto"; exit 1; }
+
+# ─── Descoberta (nada hardcoded: tudo sai do compose e do diretório code/) ────
+
+# ⚠️ Todo helper aqui precisa sair com 0 mesmo sem encontrar nada. Com
+#    `set -euo pipefail`, um grep vazio ou um inspect em tag inexistente mata o
+#    script SEM MENSAGEM — foi o que aconteceu ao promover com build em curso.
+_imagem_do_app() {
+  grep -oE "image: [^ ]+/[a-z0-9._-]*${1}:prd" "$COMPOSE" 2>/dev/null | head -1 | sed 's/^image: //' || true
+}
+
+_dir_do_app() {
+  local d
+  for d in code/"${1}".*; do
+    [[ -d "$d/.git" ]] && { echo "$d"; return 0; }
+  done
+  return 1
+}
+
+# Serviços do compose que rodam a imagem deste app. Derivado, não fixo: a API
+# roda em três (php, command, supervisor) e os frontends em um só.
+_servicos_do_app() {
+  python3 - "$COMPOSE" "$1" <<'PY_SVC'
+import sys, re
+texto = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+app = sys.argv[2]
+atual, corpo, saida = None, [], []
+for l in texto.splitlines():
+    m = re.match(r'^  ([a-z0-9_-]+):$', l)
+    if m or l.startswith('volumes:') or l.startswith('networks:'):
+        if atual and any(re.search(rf'image:.*-{re.escape(app)}:prd', c) for c in corpo):
+            saida.append(atual)
+        atual = m.group(1) if m else None
+        corpo = []
+    elif atual:
+        corpo.append(l)
+if atual and any(re.search(rf'image:.*-{re.escape(app)}:prd', c) for c in corpo):
+    saida.append(atual)
+print(' '.join(saida))
+PY_SVC
+}
+
+_apps_do_compose() {
+  grep -oE "image: [^ ]+/[a-z0-9._-]+-([a-z0-9]+):prd" "$COMPOSE" 2>/dev/null \
+    | sed -E 's/.*-([a-z0-9]+):prd$/\1/' | sort -u || true
+}
+
+# ⚠️ O --format do imagetools não é honrado em toda versão do buildx: em algumas
+#    ele imprime a saída padrão e ignora o template. Extrair a linha é confiável
+#    em ambas.
+# ⚠️ Distinguir "não existe" de "não posso ver" é obrigatório aqui. Com o stderr
+#    jogado fora, um login expirado no registry vira "a tag não existe" — e a
+#    mensagem manda investigar um build que rodou e passou. Já aconteceu.
+readonly AUTH_SENTINELA='__sem-acesso-ao-registry__'
+
+_digest() {
+  local saida
+  # Sem o `|| { ... }`, uma tag inexistente derruba o script inteiro.
+  saida=$(docker buildx imagetools inspect "$1" 2>&1) || {
+    case "$saida" in
+      *"failed to authorize"*|*401*|*403*|*denied*|*nauthorized*)
+        printf '%s\n' "$AUTH_SENTINELA" ;;
+    esac
+    return 0
+  }
+  printf '%s\n' "$saida" | awk '/^Digest:/{print $2; exit}' || true
+}
+
+# O `_digest` roda em substituição de comando — subshell não consegue abortar o
+# script. Por isso devolve a sentinela e quem chama confere.
+_guarda_auth() {
+  local d
+  for d in "$@"; do
+    [[ "$d" == "$AUTH_SENTINELA" ]] || continue
+    print_error "sem acesso de leitura ao registry — não dá para saber o que existe lá"
+    print_error "        Isto NÃO significa que a tag não existe."
+    print_error "        Refaça o login (o token do \`docker login\` é o mesmo PAT que você rotaciona):"
+    print_error "        docker login ghcr.io -u <usuário> --password-stdin"
+    return 1
+  done
+  return 0
+}
+
+_sha_de_origin_main() {
+  local dir; dir="$(_dir_do_app "$1")" || return 1
+  # ⚠️ Um cd só: o segundo `cd "$dir"` seria relativo ao diretório já trocado.
+  ( cd "$dir" && { git fetch -q origin 2>/dev/null || true; git rev-parse --short origin/main 2>/dev/null; } ) || true
+}
+
+_build_em_andamento() {
+  gh run list --workflow="gh-deploy.${1}.PRD.yml" --limit 5 \
+    --json status,databaseId --jq '.[] | select(.status != "completed") | .databaseId' 2>/dev/null | head -1 || true
+}
+
+# ─── Quadro geral ─────────────────────────────────────────────────────────────
+
+mostrar_status() {
+  printf "  %-12s %-10s %-10s %-12s %s\n" APP "origin/main" "em :prd" "build" "situação"
+  printf "  %-12s %-10s %-10s %-12s %s\n" "────────────" "──────────" "──────────" "────────────" "────────"
+  local app img sha atual alvo st
+  for app in $(_apps_do_compose); do
+    img="$(_imagem_do_app "$app")"
+    sha="$(_sha_de_origin_main "$app" || echo '?')"
+    atual="$(_digest "$img")"
+    alvo="$(_digest "${img%:prd}:sha-${sha}")"
+    _guarda_auth "$atual" "$alvo" || return 1
+    st="$(gh run list --workflow="gh-deploy.${app}.PRD.yml" --limit 1 --json status --jq '.[0].status' 2>/dev/null || echo '?')"
+    local sit
+    if [[ -n "$atual" && "$atual" == "$alvo" ]]; then sit="✅ em dia"
+    elif [[ "$st" != "completed" ]];              then sit="⏳ buildando"
+    elif [[ -z "$alvo" ]];                        then sit="⚠️  sem imagem para esse commit"
+    else                                               sit="🔸 pronto para promover"
+    fi
+    printf "  %-12s %-10s %-10s %-12s %s\n" "$app" "$sha" "${atual:7:8}" "$st" "$sit"
+  done
+}
+
+# ─── Promoção ─────────────────────────────────────────────────────────────────
+
+promover_app() {
+  local app="$1" sha="${2:-}" img atual alvo
+
+  img="$(_imagem_do_app "$app")"
+  [[ -n "$img" ]] || { print_error "[$app] imagem não encontrada em $COMPOSE"; return 1; }
+
+  if [[ -z "$sha" ]]; then
+    # ⚠️ origin/main, não HEAD: trabalhando via PR o clone local fica atrás, e o
+    #    build sai sempre de main.
+    sha="sha-$(_sha_de_origin_main "$app")" || {
+      print_error "[$app] repo de código não encontrado em code/"; return 1; }
+  fi
+
+  print_step "[$app] alvo: ${sha}"
+
+  atual="$(_digest "$img")"
+  alvo="$(_digest "${img%:prd}:${sha}")"
+  _guarda_auth "$atual" "$alvo" || return 1
+
+  if [[ -n "$alvo" && "$atual" == "$alvo" ]]; then
+    print_success "[$app] já está em produção — nada a fazer"
+    return 0
+  fi
+
+  local id; id="$(_build_em_andamento "$app")"
+  if [[ -n "$id" ]]; then
+    if [[ "$CHECK_ONLY" == true ]]; then
+      print_warning "[$app] build em andamento (run $id) — promover agora falharia"
+      return 0
+    fi
+    print_info "[$app] build em andamento, aguardando (até ${WAIT_MAX}s)..."
+    if ! gh run watch "$id" --exit-status >/dev/null 2>&1; then
+      print_error "[$app] o build não terminou bem — não vou promover"
+      print_error "        gh run view $id --log-failed"
+      return 1
+    fi
+    print_success "[$app] build concluído"
+    alvo="$(_digest "${img%:prd}:${sha}")"
+    _guarda_auth "$alvo" || return 1
+  fi
+
+  if [[ -z "$alvo" ]]; then
+    print_error "[$app] a tag ${sha} não existe em ${img%:prd}"
+    print_error "        O build desse commit não rodou ou falhou."
+    print_error "        gh run list --workflow=gh-deploy.${app}.PRD.yml --limit 3"
+    return 1
+  fi
+
+  if [[ "$CHECK_ONLY" == true ]]; then
+    print_warning "[$app] pronto para promover: ${sha}"
+    print_info "        em produção agora: ${atual:0:19}…"
+    return 0
+  fi
+
+  gh workflow run promote.yml -f app="$app" -f sha="$sha" >/dev/null
+  print_success "[$app] promoção disparada → ${sha}"
+
+  if [[ "$NOW" != true ]]; then
+    print_info "        o Watchtower recria o container em até 120s"
+    print_info "        (use --now para aplicar sem esperar)"
+    return 0
+  fi
+
+  # ── --now: não espera o poll do Watchtower ──────────────────────────────────
+  print_info "[$app] aguardando a promoção concluir..."
+  sleep 3
+  local pid
+  pid=$(gh run list --workflow=promote.yml --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null)
+  if [[ -n "$pid" ]] && ! gh run watch "$pid" --exit-status >/dev/null 2>&1; then
+    print_error "[$app] a promoção falhou — não vou aplicar"
+    print_error "        gh run view $pid --log-failed"
+    return 1
+  fi
+
+  local svcs; svcs="$(_servicos_do_app "$app")"
+  if [[ -z "$svcs" ]]; then
+    print_error "[$app] não achei serviço no compose usando essa imagem"
+    return 1
+  fi
+
+  print_step "[$app] aplicando agora em: ${svcs}"
+  # Reusa o deploy-run em modo remoto: uma implementação só para subir serviço.
+  if ./deploy-run "$ENV_TARGET" $svcs; then
+    print_success "[$app] no ar"
+  else
+    print_error "[$app] falha ao aplicar — o Watchtower ainda pegará no próximo poll"
+    return 1
+  fi
+}
+
+# ─── Principal ────────────────────────────────────────────────────────────────
+
+if [[ "$STATUS" == true ]]; then mostrar_status; exit 0; fi
+
+if [[ "$ALL" == true ]]; then
+  falhas=0
+  for a in $(_apps_do_compose); do
+    promover_app "$a" || falhas=$(( falhas + 1 ))
+    echo
+  done
+  [[ "$falhas" -gt 0 ]] && exit 1
+  exit 0
+fi
+
+[[ -n "$APP" ]] || { print_error "informe o app. Ex.: ./deploy-promote ${ENV_TARGET} api"; exit 1; }
+promover_app "$APP" "$SHA_ARG"

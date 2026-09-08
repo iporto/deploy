@@ -1,0 +1,927 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+################################################################################
+# Script de Backup por Container (execução local)
+# Conecta ao servidor remoto e faz backup de cada container do projeto.
+#
+# Modos de saída:
+#   --local  (padrão)  Transfere os backups para esta máquina
+#   --remote           Salva os backups no servidor (REMOTE_BASE_PATH/backups/)
+#
+# Lê conexão SSH de .env.AMBIENTE (igual ao deploy-sync).
+################################################################################
+
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly CYAN='\033[0;36m'
+readonly NC='\033[0m'
+
+ENV_TARGET=""
+SERVER_FILTER=""
+SSH_KEY=${SSH_KEY:-}
+BASTION_HOST=""
+REMOTE_HOST=""
+REMOTE_HOST_OVERRIDE=""
+REMOTE_BASE_PATH=""
+PROJECT_NAME=""
+
+BACKUP_DEST="local"
+BACKUP_BASE_DIR="${BACKUP_DIR:-./backups}"
+BACKUP_RETENTION="${BACKUP_RETENTION:-7}"
+COMPRESS=true
+DRY_RUN=false
+SKIP_GENERIC=false
+SSH_CONTROL_SOCKET=""
+
+################################################################################
+# Utilidade
+################################################################################
+
+print_error()   { echo -e "${RED}[ERRO]${NC} $*" >&2; }
+print_success() { echo -e "${GREEN}[OK]${NC} $*"; }
+print_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
+print_warning() { echo -e "${YELLOW}[AVISO]${NC} $*"; }
+print_header()  { echo -e "\n${BLUE}===${NC} $* ${BLUE}===${NC}"; }
+print_step()    { echo -e "${CYAN}[>>]${NC} $*"; }
+
+_local_env_read() {
+  local key="$1" file="$2"
+  grep "^${key}=" "$file" | cut -d= -f2- | tr -d '"' | tr -d "'" || true
+}
+
+_remote_env_read() {
+  local ssh_cmd="$1" key="$2"
+  $ssh_cmd "$REMOTE_HOST" \
+    "grep '^${key}=' '${REMOTE_BASE_PATH}/.env' | cut -d= -f2- | tr -d '\"' | tr -d \"'\"" \
+    2>/dev/null || true
+}
+
+_remote_container_env() {
+  local ssh_cmd="$1" container="$2" var="$3"
+  $ssh_cmd "$REMOTE_HOST" "docker exec '${container}' printenv '${var}' 2>/dev/null || true"
+}
+
+_filesize() {
+  [[ -e "$1" ]] && du -sh "$1" | cut -f1 || echo "?"
+}
+
+_cleanup_ssh() {
+  if [[ -n "$SSH_CONTROL_SOCKET" ]]; then
+    ssh -O exit -o "ControlPath=${SSH_CONTROL_SOCKET}" placeholder 2>/dev/null || true
+    rm -f "$SSH_CONTROL_SOCKET"
+  fi
+}
+trap _cleanup_ssh EXIT INT TERM
+
+################################################################################
+# Ajuda e argumentos
+################################################################################
+
+show_usage() {
+  cat << EOF
+Uso: $(basename "$0") [AMBIENTE] [SERVIDOR] [OPÇÕES]
+
+Conecta ao servidor(es) remoto(s) e faz backup de cada container.
+Com servers.yml: itera por todos os servidores do ambiente (ou um específico).
+Sem servers.yml: lê conexão de .env.AMBIENTE (servidor único).
+
+AMBIENTE:
+  dev, prd, stg    Ambiente alvo
+
+SERVIDOR:
+  <nome>           (opcional) Nome do servidor em servers.yml.
+                   Omitir = todos os servidores do ambiente.
+
+DESTINO:
+  --local,  -L     Transfere backup para esta máquina (padrão)
+  --remote, -R     Salva backup no servidor (REMOTE_BASE_PATH/backups/)
+
+OPÇÕES:
+  --no-compress,-C   Não comprime os arquivos gerados
+  --no-generic, -G   Pula containers sem banco de dados detectado
+  --dry-run,    -n   Simula sem executar nada
+  --retain N,   -k N Mantém os N backups mais recentes (padrão: 7)
+  --dir DIR,    -o DIR Diretório local de saída (padrão: ./backups)
+  --help,       -h   Exibe esta ajuda
+
+EXEMPLOS (com servers.yml):
+  ./deploy-backup prd              Backup de todos os servidores PRD
+  ./deploy-backup prd redis        Só o servidor 'redis'
+  ./deploy-backup prd -n           Dry-run de todos os PRD
+  ./deploy-backup prd main --remote  Backup do main salvo no servidor
+
+SAÍDA LOCAL (./backups/prd/YYYY-MM-DD_HH-MM-SS/[SERVIDOR/]<container>/):
+  dump.sql.gz      MySQL ou PostgreSQL
+  dump.rdb         Redis
+  mongodump.tar.gz MongoDB
+  volumes/         Containers genéricos (volumes nomeados)
+
+ARQUIVO servers.yml (no diretório do projeto):
+  servers:
+    prd:
+      - name: main
+        label: VM Principal
+        env_file: .env.prd
+      - name: redis
+        label: VM Redis
+        env_file: .docker-stand-alone/Database/Redis/.env.prd
+
+  Sem servers.yml: lê .env.AMBIENTE do diretório atual (comportamento original).
+
+EOF
+}
+
+parse_arguments() {
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" == "--help" || "$arg" == "-h" ]]; then
+      show_usage; exit 0
+    fi
+  done
+
+  if [[ $# -gt 0 && ! "$1" =~ ^- ]]; then
+    ENV_TARGET="$1"; shift
+  fi
+
+  # Segundo posicional opcional: SERVIDOR
+  if [[ $# -gt 0 && ! "$1" =~ ^- ]]; then
+    SERVER_FILTER="$1"; shift
+  fi
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --local|-L)       BACKUP_DEST="local" ;;
+      --remote|-R)      BACKUP_DEST="remote" ;;
+      --no-compress|-C) COMPRESS=false ;;
+      --no-generic|-G)  SKIP_GENERIC=true ;;
+      --dry-run|-n)     DRY_RUN=true ;;
+      --retain|-k)      shift; BACKUP_RETENTION="${1:?'--retain requer N'}" ;;
+      --dir|-o)         shift; BACKUP_BASE_DIR="${1:?'--dir requer caminho'}" ;;
+      *) print_error "Opção desconhecida: $1"; show_usage; exit 1 ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$ENV_TARGET" ]]; then
+    print_error "Ambiente obrigatório: dev, prd ou stg"
+    show_usage; exit 1
+  fi
+}
+
+################################################################################
+# Configuração
+################################################################################
+
+################################################################################
+# Leitura do servers.yml (via Python3 stdlib — sem dependências externas)
+################################################################################
+
+_parse_servers_yml() {
+  local env="$1" filter="${2:-}"
+  python3 - "$env" "$filter" << 'PYEOF'
+import re, sys
+
+env = sys.argv[1]
+server_filter = sys.argv[2] if len(sys.argv) > 2 else ""
+
+try:
+    with open('servers.yml') as f:
+        content = f.read()
+except FileNotFoundError:
+    sys.exit(0)
+
+env_match = re.search(
+    r'^  ' + re.escape(env) + r':\n((?:    .*\n?)*)',
+    content, re.MULTILINE
+)
+if not env_match:
+    sys.exit(0)
+
+section = env_match.group(1)
+servers = re.findall(
+    r'    - name: (\S+)\n      label: (.*?)\n      env_file: (\S+)',
+    section
+)
+for name, label, env_file in servers:
+    if not server_filter or name == server_filter:
+        print(f'{name}|{label.strip()}|{env_file}')
+PYEOF
+}
+
+################################################################################
+# Configuração
+################################################################################
+
+load_local_env() {
+  # Aceita path customizado (do servers.yml) ou deriva do ENV_TARGET
+  local env_file="${1:-".env.${ENV_TARGET}"}"
+
+  case "$ENV_TARGET" in
+    dev|prd|stg) ;;
+    *) print_error "Ambiente inválido: $ENV_TARGET (válidos: dev, prd, stg)"; exit 1 ;;
+  esac
+
+  if [[ ! -f "$env_file" ]]; then
+    print_error "Arquivo $env_file não encontrado"
+    exit 1
+  fi
+
+  print_info "Carregando conexão de: $env_file"
+
+  BASTION_HOST=$(_local_env_read BASTION_HOST "$env_file")
+  REMOTE_HOST=$(_local_env_read REMOTE_HOST "$env_file")
+  REMOTE_BASE_PATH=$(_local_env_read REMOTE_BASE_PATH "$env_file")
+
+  if [[ -n "$REMOTE_HOST_OVERRIDE" ]]; then
+    REMOTE_HOST="$REMOTE_HOST_OVERRIDE"
+  fi
+
+  if [[ -z "$REMOTE_HOST" ]]; then
+    print_error "REMOTE_HOST não definido em $env_file"
+    exit 1
+  fi
+
+  if [[ -z "$REMOTE_BASE_PATH" ]]; then
+    print_error "REMOTE_BASE_PATH não definido em $env_file"
+    exit 1
+  fi
+}
+
+build_ssh_command() {
+  # SSH_CONTROL_SOCKET deve ser definido pelo chamador antes desta função
+  local ssh_cmd="ssh"
+  ssh_cmd+=" -o StrictHostKeyChecking=accept-new"
+  ssh_cmd+=" -o ServerAliveInterval=30"
+  ssh_cmd+=" -o ConnectTimeout=10"
+  ssh_cmd+=" -o ControlMaster=auto"
+  ssh_cmd+=" -o ControlPath=${SSH_CONTROL_SOCKET}"
+  ssh_cmd+=" -o ControlPersist=120"
+
+  if [[ -n "$SSH_KEY" ]]; then
+    ssh_cmd+=" -i ${SSH_KEY}"
+  fi
+
+  if [[ -n "${BASTION_HOST}" ]]; then
+    ssh_cmd+=" -J ${BASTION_HOST}"
+    print_info "SSH Jump configurado via: $BASTION_HOST"
+  fi
+
+  echo "$ssh_cmd"
+}
+
+resolve_project_name() {
+  local ssh_cmd="$1"
+
+  local app_name
+  app_name=$(_remote_env_read "$ssh_cmd" APP_PROJECT_NAME)
+
+  if [[ -z "$app_name" ]]; then
+    print_error "APP_PROJECT_NAME não encontrado em ${REMOTE_BASE_PATH}/.env"
+    exit 1
+  fi
+
+  case "$ENV_TARGET" in
+    prd) PROJECT_NAME="${app_name}-prod" ;;
+    dev) PROJECT_NAME="${app_name}-dev" ;;
+    stg) PROJECT_NAME="${app_name}-stg" ;;
+  esac
+
+  print_info "Projeto no servidor: $PROJECT_NAME"
+}
+
+show_configuration() {
+  local dest_label
+  if [[ "$BACKUP_DEST" == "local" ]]; then
+    dest_label="local → ${BACKUP_BASE_DIR}/${ENV_TARGET}/"
+  else
+    dest_label="servidor → ${REMOTE_BASE_PATH}/backups/"
+  fi
+
+  print_header "Configuração de Backup"
+  echo "Ambiente:    $ENV_TARGET"
+  echo "Host:        $REMOTE_HOST"
+  echo "Bastion:     ${BASTION_HOST:-nenhum}"
+  echo "Projeto:     $PROJECT_NAME"
+  echo "Destino:     $dest_label"
+  echo "Compressão:  $COMPRESS"
+  echo "Retenção:    últimos $BACKUP_RETENTION backups"
+  if [[ "$DRY_RUN" == true ]]; then
+    echo -e "${YELLOW}Modo:        DRY-RUN${NC}"
+  fi
+  print_header ""
+  echo
+}
+
+################################################################################
+# Detecção de tipo de container
+################################################################################
+
+detect_container_type() {
+  local ssh_cmd="$1" container="$2"
+  local image
+  image=$($ssh_cmd "$REMOTE_HOST" \
+    "docker inspect '${container}' --format '{{.Config.Image}}' 2>/dev/null | tr '[:upper:]' '[:lower:]'" \
+    || echo "")
+
+  if   [[ "$image" =~ mysql|mariadb ]]; then echo "mysql"
+  elif [[ "$image" =~ postgres ]];      then echo "postgres"
+  elif [[ "$image" =~ redis ]];         then echo "redis"
+  elif [[ "$image" =~ mongo ]];         then echo "mongo"
+  else                                       echo "generic"
+  fi
+}
+
+################################################################################
+# MySQL / MariaDB
+################################################################################
+
+backup_mysql() {
+  local ssh_cmd="$1" container="$2" out_dir="$3"
+  print_step "MySQL/MariaDB"
+
+  local user="" pass="" dump_target=""
+  local root_pass="" db=""
+
+  # ⚠️ O MariaDB 12 removeu os binários `mysql*` em favor de `mariadb-*`. Detecta
+  #    antes de qualquer uso: tanto o dump quanto a listagem de bases dependem
+  #    disso. Antes o `mysqldump` fixo falhava e o script ainda imprimia [OK].
+  local dump_bin="mysqldump" cli_bin="mysql"
+  if $ssh_cmd "$REMOTE_HOST" "docker exec '${container}' sh -c 'command -v mariadb-dump' >/dev/null 2>&1"; then
+    dump_bin="mariadb-dump"; cli_bin="mariadb"
+  fi
+  print_info "binários: ${dump_bin} / ${cli_bin}"
+
+  root_pass=$(_remote_container_env "$ssh_cmd" "$container" MYSQL_ROOT_PASSWORD)
+  db=$(_remote_container_env "$ssh_cmd" "$container" MYSQL_DATABASE)
+
+  if [[ -n "$root_pass" ]]; then
+    user="root"; pass="$root_pass"
+    if [[ -n "$db" ]]; then
+      dump_target="--databases $db"
+      print_info "root / banco: $db"
+    else
+      # ⚠️ NUNCA --all-databases: ele inclui a base `mysql`, com as tabelas de
+      #    sistema. Restaurar esse dump num servidor de versão diferente
+      #    sobrescreve mysql.proc e corrompe o destino:
+      #      "Column count of mysql.proc is wrong. Expected 22, found 21"
+      #
+      #    Enumera as bases da aplicação e ignora as de sistema.
+      local lista
+      lista=$($ssh_cmd "$REMOTE_HOST" \
+        "docker exec -e MYSQL_PWD='${pass}' '${container}' ${cli_bin} -u '${user}' -N -B -e \
+         \"SHOW DATABASES WHERE \\\`Database\\\` NOT IN ('mysql','information_schema','performance_schema','sys')\"" \
+        2>/dev/null | tr '\n' ' ')
+
+      if [[ -z "$lista" ]]; then
+        print_warning "Não consegui listar as bases — pulando"
+        return 0
+      fi
+      dump_target="--databases $lista"
+      print_info "root / bases da aplicação: $lista"
+    fi
+  else
+    user=$(_remote_container_env "$ssh_cmd" "$container" MYSQL_USER)
+    pass=$(_remote_container_env "$ssh_cmd" "$container" MYSQL_PASSWORD)
+    db=$(_remote_container_env "$ssh_cmd" "$container" MYSQL_DATABASE)
+    if [[ -z "$user" || -z "$pass" || -z "$db" ]]; then
+      print_warning "Credenciais não encontradas — pulando"
+      return 0
+    fi
+    dump_target="$db"
+    print_info "$user / banco: $db"
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_warning "Dry-run: mysqldump → ${out_dir}/dump.sql[.gz]"
+    return 0
+  fi
+
+  local dump_cmd="docker exec -e MYSQL_PWD='${pass}' '${container}' ${dump_bin} -u '${user}' --single-transaction --quick --routines --triggers ${dump_target}"
+
+  # Valida o resultado: dump vazio ou truncado precisa gritar, não passar batido.
+  _validar_dump() {
+    local arq="$1" minimo="${2:-512}"
+    local tam
+    tam=$(wc -c < "$arq" 2>/dev/null | tr -d ' ')
+    if [[ ! -s "$arq" || "${tam:-0}" -lt "$minimo" ]]; then
+      print_error "dump inválido: ${arq} (${tam:-0} bytes)"
+      print_error "O comando de dump falhou. Rode manualmente para ver o erro:"
+      print_error "  ssh ${REMOTE_HOST} \"${dump_cmd} | head -5\""
+      return 1
+    fi
+    return 0
+  }
+
+  if [[ "$BACKUP_DEST" == "local" ]]; then
+    if [[ "$COMPRESS" == true ]]; then
+      $ssh_cmd "$REMOTE_HOST" "$dump_cmd" | gzip > "${out_dir}/dump.sql.gz"
+      _validar_dump "${out_dir}/dump.sql.gz" 512 || return 1
+      print_success "→ ${out_dir}/dump.sql.gz ($(_filesize "${out_dir}/dump.sql.gz"))"
+    else
+      $ssh_cmd "$REMOTE_HOST" "$dump_cmd" > "${out_dir}/dump.sql"
+      _validar_dump "${out_dir}/dump.sql" 1024 || return 1
+      print_success "→ ${out_dir}/dump.sql ($(_filesize "${out_dir}/dump.sql"))"
+    fi
+  else
+    if [[ "$COMPRESS" == true ]]; then
+      $ssh_cmd "$REMOTE_HOST" "$dump_cmd | gzip > '${out_dir}/dump.sql.gz'"
+      print_success "→ servidor:${out_dir}/dump.sql.gz"
+    else
+      $ssh_cmd "$REMOTE_HOST" "$dump_cmd > '${out_dir}/dump.sql'"
+      print_success "→ servidor:${out_dir}/dump.sql"
+    fi
+  fi
+}
+
+################################################################################
+# PostgreSQL
+################################################################################
+
+backup_postgres() {
+  local ssh_cmd="$1" container="$2" out_dir="$3"
+  print_step "PostgreSQL"
+
+  local user
+  user=$(_remote_container_env "$ssh_cmd" "$container" POSTGRES_USER)
+  if [[ -z "$user" ]]; then
+    user="postgres"
+  fi
+  print_info "Usuário: $user"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_warning "Dry-run: pg_dumpall → ${out_dir}/dump.sql[.gz]"
+    return 0
+  fi
+
+  local dump_cmd="docker exec '${container}' pg_dumpall -U '${user}'"
+
+  if [[ "$BACKUP_DEST" == "local" ]]; then
+    if [[ "$COMPRESS" == true ]]; then
+      $ssh_cmd "$REMOTE_HOST" "$dump_cmd" | gzip > "${out_dir}/dump.sql.gz"
+      print_success "→ ${out_dir}/dump.sql.gz ($(_filesize "${out_dir}/dump.sql.gz"))"
+    else
+      $ssh_cmd "$REMOTE_HOST" "$dump_cmd" > "${out_dir}/dump.sql"
+      print_success "→ ${out_dir}/dump.sql ($(_filesize "${out_dir}/dump.sql"))"
+    fi
+  else
+    if [[ "$COMPRESS" == true ]]; then
+      $ssh_cmd "$REMOTE_HOST" "$dump_cmd | gzip > '${out_dir}/dump.sql.gz'"
+      print_success "→ servidor:${out_dir}/dump.sql.gz"
+    else
+      $ssh_cmd "$REMOTE_HOST" "$dump_cmd > '${out_dir}/dump.sql'"
+      print_success "→ servidor:${out_dir}/dump.sql"
+    fi
+  fi
+}
+
+################################################################################
+# Redis
+################################################################################
+
+backup_redis() {
+  local ssh_cmd="$1" container="$2" out_dir="$3"
+  print_step "Redis"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_warning "Dry-run: BGSAVE + dump.rdb → ${out_dir}/"
+    return 0
+  fi
+
+  local redis_dir
+  redis_dir=$($ssh_cmd "$REMOTE_HOST" "docker exec '${container}' redis-cli CONFIG GET dir 2>/dev/null | tail -1" || echo "/data")
+
+  # Dispara BGSAVE e aguarda conclusão (até 30s)
+  local before
+  before=$($ssh_cmd "$REMOTE_HOST" "docker exec '${container}' redis-cli LASTSAVE 2>/dev/null" || echo "0")
+  $ssh_cmd "$REMOTE_HOST" "docker exec '${container}' redis-cli BGSAVE >/dev/null 2>&1" || true
+
+  local elapsed=0
+  until [[ "$($ssh_cmd "$REMOTE_HOST" "docker exec '${container}' redis-cli LASTSAVE 2>/dev/null" || echo "0")" != "$before" ]]; do
+    sleep 1
+    elapsed=$(( elapsed + 1 ))
+    if [[ $elapsed -ge 30 ]]; then
+      print_warning "Timeout aguardando BGSAVE — copiando dump existente"
+      break
+    fi
+  done
+
+  if [[ "$BACKUP_DEST" == "local" ]]; then
+    local tmp="/tmp/backup-redis-$$.rdb"
+    $ssh_cmd "$REMOTE_HOST" "docker cp '${container}:${redis_dir}/dump.rdb' '$tmp' 2>/dev/null" || {
+      print_warning "dump.rdb não encontrado (Redis sem persistência?)"
+      return 0
+    }
+    rsync -e "$ssh_cmd" "${REMOTE_HOST}:${tmp}" "${out_dir}/dump.rdb"
+    $ssh_cmd "$REMOTE_HOST" "rm -f '$tmp'" 2>/dev/null || true
+    print_success "→ ${out_dir}/dump.rdb ($(_filesize "${out_dir}/dump.rdb"))"
+  else
+    $ssh_cmd "$REMOTE_HOST" "docker cp '${container}:${redis_dir}/dump.rdb' '${out_dir}/dump.rdb' 2>/dev/null" || {
+      print_warning "dump.rdb não encontrado (Redis sem persistência?)"
+      return 0
+    }
+    print_success "→ servidor:${out_dir}/dump.rdb"
+  fi
+}
+
+################################################################################
+# MongoDB
+################################################################################
+
+backup_mongo() {
+  local ssh_cmd="$1" container="$2" out_dir="$3"
+  print_step "MongoDB"
+
+  local auth_args="" user="" pass=""
+  user=$(_remote_container_env "$ssh_cmd" "$container" MONGO_INITDB_ROOT_USERNAME)
+  pass=$(_remote_container_env "$ssh_cmd" "$container" MONGO_INITDB_ROOT_PASSWORD)
+  if [[ -n "$user" && -n "$pass" ]]; then
+    auth_args="-u '$user' -p '$pass' --authenticationDatabase admin"
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    print_warning "Dry-run: mongodump → ${out_dir}/"
+    return 0
+  fi
+
+  local tmp="/tmp/backup-mongo-$$"
+
+  if [[ "$BACKUP_DEST" == "local" ]]; then
+    $ssh_cmd "$REMOTE_HOST" \
+      "docker exec '${container}' mongodump $auth_args --out /tmp/_mongodump_$$ >/dev/null 2>&1 \
+       && docker cp '${container}:/tmp/_mongodump_$$' '$tmp' \
+       && docker exec '${container}' rm -rf /tmp/_mongodump_$$ 2>/dev/null || true"
+
+    if [[ "$COMPRESS" == true ]]; then
+      $ssh_cmd "$REMOTE_HOST" \
+        "tar -czf '${tmp}.tar.gz' -C '$(dirname "$tmp")' '$(basename "$tmp")' && rm -rf '$tmp'"
+      rsync -e "$ssh_cmd" "${REMOTE_HOST}:${tmp}.tar.gz" "${out_dir}/mongodump.tar.gz"
+      $ssh_cmd "$REMOTE_HOST" "rm -f '${tmp}.tar.gz'" 2>/dev/null || true
+      print_success "→ ${out_dir}/mongodump.tar.gz ($(_filesize "${out_dir}/mongodump.tar.gz"))"
+    else
+      rsync -e "$ssh_cmd" -r "${REMOTE_HOST}:${tmp}/" "${out_dir}/mongodump/"
+      $ssh_cmd "$REMOTE_HOST" "rm -rf '$tmp'" 2>/dev/null || true
+      print_success "→ ${out_dir}/mongodump/ ($(_filesize "${out_dir}/mongodump"))"
+    fi
+  else
+    $ssh_cmd "$REMOTE_HOST" \
+      "docker exec '${container}' mongodump $auth_args --out '${out_dir}/mongodump' >/dev/null 2>&1"
+    if [[ "$COMPRESS" == true ]]; then
+      $ssh_cmd "$REMOTE_HOST" \
+        "tar -czf '${out_dir}/mongodump.tar.gz' -C '${out_dir}' mongodump && rm -rf '${out_dir}/mongodump'"
+      print_success "→ servidor:${out_dir}/mongodump.tar.gz"
+    else
+      print_success "→ servidor:${out_dir}/mongodump/"
+    fi
+  fi
+}
+
+################################################################################
+# Volumes genéricos
+################################################################################
+
+# Volumes já salvos nesta execução: um volume compartilhado entre containers
+# não precisa (nem deve) ser copiado uma vez por container.
+#
+# ⚠️ Lista em string, não array associativo: o macOS ainda entrega bash 3.2, que
+#    não tem `declare -A`. Estes scripts rodam na máquina do operador.
+VOLUMES_SALVOS=""
+
+_volume_ja_salvo() {
+  case " ${VOLUMES_SALVOS} " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+backup_volumes() {
+  local ssh_cmd="$1" container="$2" out_dir="$3"
+
+  if [[ "$SKIP_GENERIC" == true ]]; then
+    print_info "Container sem banco detectado — pulando ($container)"
+    return 0
+  fi
+
+  print_step "Genérico — volumes nomeados"
+
+  local volumes
+  volumes=$($ssh_cmd "$REMOTE_HOST" \
+    "docker inspect '${container}' --format \
+     '{{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}}:{{.Destination}} {{end}}{{end}}' \
+     2>/dev/null | tr ' ' '\n' | grep -v '^$'" || true)
+
+  if [[ -z "$volumes" ]]; then
+    print_info "Nenhum volume nomeado em $container"
+    return 0
+  fi
+
+  local vol_dir="${out_dir}/volumes"
+
+  local -a vol_list=()
+  while IFS= read -r _v; do
+    [[ -n "$_v" ]] && vol_list+=("$_v")
+  done <<< "$volumes"
+
+  local _entry vol_name vol_path
+  for _entry in "${vol_list[@]}"; do
+    vol_name="${_entry%%:*}"
+    vol_path="${_entry#*:}"
+    [[ -z "$vol_name" ]] && continue
+
+    # Volume compartilhado: salva uma vez só por execução.
+    if _volume_ja_salvo "$vol_name"; then
+      print_info "Volume: $vol_name — já salvo nesta execução, pulando"
+      continue
+    fi
+
+    print_info "Volume: $vol_name ($vol_path)"
+
+    if [[ "$DRY_RUN" == true ]]; then
+      print_warning "Dry-run: cp volume '$vol_name'"
+      VOLUMES_SALVOS="${VOLUMES_SALVOS} ${vol_name}"
+      continue
+    fi
+
+    # Só cria o diretório quando há algo real para gravar.
+    if [[ "$BACKUP_DEST" == "local" ]]; then
+      mkdir -p "$vol_dir"
+    else
+      $ssh_cmd "$REMOTE_HOST" "mkdir -p '$vol_dir'"
+    fi
+    VOLUMES_SALVOS="${VOLUMES_SALVOS} ${vol_name}"
+
+    local tmp="/tmp/backup-vol-$$-${vol_name}"
+
+    if [[ "$BACKUP_DEST" == "local" ]]; then
+      $ssh_cmd "$REMOTE_HOST" "docker cp '${container}:${vol_path}' '$tmp'"
+      $ssh_cmd "$REMOTE_HOST" \
+        "tar -czf '${tmp}.tar.gz' -C '$(dirname "$tmp")' '$(basename "$tmp")' && rm -rf '$tmp'"
+      rsync -e "$ssh_cmd" "${REMOTE_HOST}:${tmp}.tar.gz" "${vol_dir}/${vol_name}.tar.gz"
+      $ssh_cmd "$REMOTE_HOST" "rm -f '${tmp}.tar.gz'" 2>/dev/null || true
+      print_success "→ ${vol_dir}/${vol_name}.tar.gz ($(_filesize "${vol_dir}/${vol_name}.tar.gz"))"
+    else
+      local remote_vol="${vol_dir}/${vol_name}"
+      $ssh_cmd "$REMOTE_HOST" "docker cp '${container}:${vol_path}' '$tmp'"
+      if [[ "$COMPRESS" == true ]]; then
+        $ssh_cmd "$REMOTE_HOST" \
+          "tar -czf '${remote_vol}.tar.gz' -C '$(dirname "$tmp")' '$(basename "$tmp")' && rm -rf '$tmp'"
+        print_success "→ servidor:${remote_vol}.tar.gz"
+      else
+        $ssh_cmd "$REMOTE_HOST" "mv '$tmp' '$remote_vol'"
+        print_success "→ servidor:${remote_vol}/"
+      fi
+    fi
+  done
+}
+
+################################################################################
+# Backup de um container
+################################################################################
+
+backup_container() {
+  local ssh_cmd="$1" container="$2" backup_base="$3"
+
+  local out_dir="${backup_base}/${container}"
+
+  print_header "Container: $container"
+
+  local type
+  type=$(detect_container_type "$ssh_cmd" "$container")
+  print_info "Tipo detectado: $type"
+
+  if [[ "$DRY_RUN" == false ]]; then
+    if [[ "$BACKUP_DEST" == "local" ]]; then
+      mkdir -p "$out_dir"
+    else
+      $ssh_cmd "$REMOTE_HOST" "mkdir -p '$out_dir'"
+    fi
+  fi
+
+  case "$type" in
+    mysql)    backup_mysql    "$ssh_cmd" "$container" "$out_dir" ;;
+    postgres) backup_postgres "$ssh_cmd" "$container" "$out_dir" ;;
+    redis)    backup_redis    "$ssh_cmd" "$container" "$out_dir" ;;
+    mongo)    backup_mongo    "$ssh_cmd" "$container" "$out_dir" ;;
+    generic)  backup_volumes  "$ssh_cmd" "$container" "$out_dir" ;;
+  esac
+}
+
+################################################################################
+# Rotação de backups antigos
+################################################################################
+
+rotate_backups() {
+  local ssh_cmd="$1" base_dir="$2"
+
+  local count=0
+  if [[ "$BACKUP_DEST" == "local" ]]; then
+    if [[ ! -d "$base_dir" ]]; then
+      return 0
+    fi
+    count=$(find "$base_dir" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+  else
+    count=$($ssh_cmd "$REMOTE_HOST" "find '$base_dir' -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l" || echo "0")
+  fi
+
+  if (( count <= BACKUP_RETENTION )); then
+    return 0
+  fi
+
+  local to_remove=$(( count - BACKUP_RETENTION ))
+  print_info "Rotacionando: removendo $to_remove backup(s) antigo(s) de $count..."
+
+  if [[ "$BACKUP_DEST" == "local" ]]; then
+    find "$base_dir" -maxdepth 1 -mindepth 1 -type d | sort | head -n "$to_remove" \
+      | while IFS= read -r old; do
+          if [[ "$DRY_RUN" == true ]]; then
+            print_warning "Dry-run: removeria $(basename "$old")"
+          else
+            rm -rf "$old"
+            print_info "Removido: $(basename "$old")"
+          fi
+        done
+  else
+    # ⚠️ Mesmo padrão que já quebrou a enumeração de containers e a de volumes:
+    #    o ssh dentro do laço consome o stdin e engole a lista. Aqui o efeito era
+    #    remover só UM backup antigo por execução, deixando o disco do servidor
+    #    encher devagar. Coleta em array antes de iterar.
+    local -a antigos=()
+    while IFS= read -r _o; do
+      [[ -n "$_o" ]] && antigos+=("$_o")
+    done < <($ssh_cmd "$REMOTE_HOST" \
+      "find '$base_dir' -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort | head -n $to_remove")
+
+    local old
+    for old in "${antigos[@]}"; do
+      if [[ "$DRY_RUN" == true ]]; then
+        print_warning "Dry-run: removeria $old"
+      else
+        $ssh_cmd "$REMOTE_HOST" "rm -rf '$old'"
+        print_info "Removido: $(basename "$old")"
+      fi
+    done
+  fi
+}
+
+################################################################################
+# Principal
+################################################################################
+
+# Executa o backup de um servidor (single-server ou dentro do loop multi)
+# Args: env_file  server_name(opcional, para subdir)
+_backup_server() {
+  local env_file="$1" server_name="${2:-}"
+  local timestamp="$3"
+
+  # Reseta estado por servidor
+  BASTION_HOST=""
+  REMOTE_HOST=""
+  REMOTE_BASE_PATH=""
+  PROJECT_NAME=""
+
+  load_local_env "$env_file"
+
+  local SSH_CMD
+  SSH_CMD=$(build_ssh_command)
+
+  print_info "Verificando conectividade SSH com $REMOTE_HOST..."
+  if [[ "$DRY_RUN" == false ]]; then
+    $SSH_CMD "$REMOTE_HOST" true 2>/dev/null || {
+      print_error "Falha ao conectar em $REMOTE_HOST"
+      if [[ -n "${BASTION_HOST}" ]]; then
+        print_info "Verifique o bastion: $BASTION_HOST"
+      fi
+      return 1
+    }
+    print_success "Conectividade SSH verificada"
+  fi
+
+  resolve_project_name "$SSH_CMD"
+
+  # Diretório de saída: inclui server_name se multi-servidor
+  local backup_base
+  if [[ "$BACKUP_DEST" == "local" ]]; then
+    if [[ -n "$server_name" ]]; then
+      backup_base="${BACKUP_BASE_DIR}/${ENV_TARGET}/${timestamp}/${server_name}"
+    else
+      backup_base="${BACKUP_BASE_DIR}/${ENV_TARGET}/${timestamp}"
+    fi
+  else
+    backup_base="${REMOTE_BASE_PATH}/backups/${timestamp}"
+  fi
+
+  show_configuration
+
+  local containers
+  containers=$($SSH_CMD "$REMOTE_HOST" \
+    "docker ps --filter 'label=com.docker.compose.project=${PROJECT_NAME}' --format '{{.Names}}' 2>/dev/null" \
+    || true)
+
+  if [[ -z "$containers" ]]; then
+    print_warning "Nenhum container em execução para '${PROJECT_NAME}'"
+    print_info "Execute './deploy-run' no servidor para iniciar os containers."
+    return 1
+  fi
+
+  # ⚠️ Antes isto era um `while read ... done <<< "$containers"`, e o ssh chamado
+  #    lá dentro CONSUMIA o stdin do laço — a lista era engolida após o primeiro
+  #    item. O backup reportava "1/1 container(s)" e salvava só o primeiro.
+  #    Iterar sobre um array não usa stdin e elimina a classe inteira do problema.
+  local -a container_list=()
+  while IFS= read -r _c; do
+    [[ -n "$_c" ]] && container_list+=("$_c")
+  done <<< "$containers"
+
+  print_info "${#container_list[@]} container(s) para processar"
+
+  local failed=0 total=0
+  for container in "${container_list[@]}"; do
+    total=$(( total + 1 ))
+    backup_container "$SSH_CMD" "$container" "$backup_base" || {
+      print_error "Falha no backup de: $container"
+      failed=$(( failed + 1 ))
+    }
+  done
+
+  # Rotação
+  local rotation_base
+  if [[ "$BACKUP_DEST" == "local" ]]; then
+    rotation_base="${BACKUP_BASE_DIR}/${ENV_TARGET}"
+  else
+    rotation_base="${REMOTE_BASE_PATH}/backups"
+  fi
+  rotate_backups "$SSH_CMD" "$rotation_base"
+
+  # Resumo do servidor
+  local ok=$(( total - failed ))
+  if [[ $failed -eq 0 ]]; then
+    print_success "$ok/$total container(s) com backup concluído"
+  else
+    print_warning "$ok/$total com sucesso — $failed com falha"
+  fi
+
+  if [[ "$DRY_RUN" == false && "$BACKUP_DEST" == "local" && -d "$backup_base" ]]; then
+    print_info "Localização: $backup_base ($(_filesize "$backup_base"))"
+  fi
+
+  return $failed
+}
+
+main() {
+  parse_arguments "$@"
+
+  if ! command -v ssh >/dev/null 2>&1; then
+    print_error "ssh não encontrado"
+    exit 1
+  fi
+
+  local timestamp
+  timestamp=$(date '+%Y-%m-%d_%H-%M-%S')
+
+  # ── Multi-servidor (servers.yml) ──────────────────────────────────────────
+  if [[ -f "servers.yml" ]]; then
+    local servers
+    servers=$(_parse_servers_yml "$ENV_TARGET" "$SERVER_FILTER")
+
+    if [[ -z "$servers" ]]; then
+      local msg="Nenhum servidor encontrado para ambiente '${ENV_TARGET}'"
+      if [[ -n "$SERVER_FILTER" ]]; then
+        msg+=" com filtro '${SERVER_FILTER}'"
+      fi
+      print_error "$msg em servers.yml"
+      exit 1
+    fi
+
+    local grand_total=0 grand_failed=0 sock_idx=0
+    while IFS='|' read -r server_name server_label server_env_file; do
+      sock_idx=$(( sock_idx + 1 ))
+      SSH_CONTROL_SOCKET="/tmp/deploy-backup-$$-${sock_idx}.sock"
+
+      print_header "Servidor: $server_label [$server_name]"
+
+      _backup_server "$server_env_file" "$server_name" "$timestamp" || {
+        grand_failed=$(( grand_failed + 1 ))
+      }
+      grand_total=$(( grand_total + 1 ))
+
+      # Encerra conexão SSH deste servidor antes do próximo
+      ssh -O exit -o "ControlPath=${SSH_CONTROL_SOCKET}" placeholder 2>/dev/null || true
+      rm -f "$SSH_CONTROL_SOCKET"
+      SSH_CONTROL_SOCKET=""
+    done <<< "$servers"
+
+    print_header "Resumo Geral"
+    local ok=$(( grand_total - grand_failed ))
+    if [[ $grand_failed -eq 0 ]]; then
+      print_success "$ok/$grand_total servidor(es) com backup concluído"
+    else
+      print_warning "$ok/$grand_total com sucesso — $grand_failed com falha"
+    fi
+    return
+  fi
+
+  # ── Servidor único (sem servers.yml) ──────────────────────────────────────
+  SSH_CONTROL_SOCKET="/tmp/deploy-backup-$$.sock"
+  _backup_server ".env.${ENV_TARGET}" "" "$timestamp"
+}
+
+main "$@"
