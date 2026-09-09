@@ -160,6 +160,20 @@ if [[ -n "$PROJ" ]]; then
               "sem isso o navegador não dá erro — ele vai para a internet. Rode: sudo sh -c 'cat ${PROJ}/hosts >> /etc/hosts'"
   fi
 
+  # ⚠️ O sintoma de quem CLONOU o projeto e não clonou os apps: code/ vazio.
+  #    O compose sobe assim mesmo — monta ./code/<nome> e o Docker cria um
+  #    diretório vazio no lugar. O erro que aparece depois fala de arquivo
+  #    faltando dentro do container, e não sugere "faltou clonar".
+  if [[ -d "$PROJ/code" ]] && [[ -z "$(ls -A "$PROJ/code" 2>/dev/null)" ]]; then
+    if [[ -f "$PROJ/docs/onboarding.md" ]]; then
+      fail "code/ está vazio — os apps não foram clonados" \
+           "este projeto são vários repositórios. Siga ${PROJ}/docs/onboarding.md"
+    else
+      fail "code/ está vazio — os apps não foram clonados" \
+           "cada app é um repositório próprio; clone-os dentro de ${PROJ}/code/"
+    fi
+  fi
+
   for app in "$PROJ"/code/*/; do
     [[ -d "$app" ]] || continue
     nome="$(basename "$app")"

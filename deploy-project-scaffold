@@ -174,6 +174,7 @@ _instanciar_kit() {
       --exclude '.env' --exclude '.env.*' \
       --exclude '.git/' --exclude '.github/' \
       --exclude 'vendor/' --exclude 'node_modules/' \
+      --exclude 'mutagen.yml' --exclude 'mutagen.yml.lock' \
       "$KIT/code/$app/" "$dst/" 2>/dev/null || { print_falha "rsync de $app"; return 1; }
 
     if find "$dst" -name '.env' -o -name '.env.local' | grep -q .; then
@@ -227,6 +228,114 @@ _reescrever_env() {
 }
 print_falha() { echo "${RED}Falha: $*${NC}" >&2; }
 
+# Um projeto completo é uma ÁRVORE de repositórios: o deploy é um, e cada app é
+# outro. Não é preciosismo — a trilha de produção constrói a imagem a partir do
+# repositório DO APP (push → GHA → GHCR → Coolify). Sem um repo por app não há
+# build.
+#
+# ⚠️ O `git init` aqui existe para evitar o pior silêncio possível: o .gitignore
+#    deste projeto tem `/code/*`, então quem commitasse só o deploy acharia que
+#    levou o código junto. O colega clonaria e receberia um code/ vazio, sem
+#    nenhum erro. Nascendo cada app como repositório, o engano não acontece.
+_iniciar_repos() {
+  command -v git >/dev/null 2>&1 || { echo "  ${YELLOW}!${NC} git não encontrado — repositórios não iniciados"; return 0; }
+  local d nome
+  for d in "$DIR" "$DIR/code"/*/; do
+    d="${d%/}"; [[ -d "$d" ]] || continue
+    nome="$(basename "$d")"
+    if [[ -d "$d/.git" ]]; then
+      echo "  ${DIM}=${NC} ${nome} — já era um repositório"
+      continue
+    fi
+    (
+      cd "$d" || exit 1
+      git init -q || exit 1
+      # `git init -b main` exige git 2.28+. Isto funciona em qualquer versão e
+      # só vale porque ainda não há commit nenhum.
+      git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+      git add -A || exit 1
+      git commit -q -m "chore: ponto de partida gerado pelo starter kit" || exit 1
+    ) && echo "  ${GREEN}+${NC} ${nome} — repositório iniciado (branch main)" \
+      || echo "  ${YELLOW}!${NC} ${nome} — git init falhou (configure user.name/user.email)"
+  done
+}
+
+# Runbook do SEGUNDO momento: alguém que pega o projeto andando. Gerado com os
+# nomes reais porque um passo a passo genérico obriga a traduzir cada linha, e é
+# aí que se erra.
+_escrever_onboarding() {
+  local f="$DIR/docs/onboarding.md" app
+  mkdir -p "$DIR/docs"
+  {
+    echo "# Entrar neste projeto"
+    echo
+    echo "> Para quem **pega o projeto andando**. Se você é quem gerou o projeto,"
+    echo "> o caminho é o README do kit."
+    echo
+    echo "Este produto são **$(( $(ls -d "$DIR/code"/*/ 2>/dev/null | wc -l | tr -d ' ') + 1 )) repositórios**: este, com a infraestrutura, e um por app."
+    echo "O \`.gitignore\` daqui ignora \`/code/*\` de propósito — os apps não moram"
+    echo "aqui dentro, cada um tem o seu repositório e constrói a própria imagem."
+    echo
+    echo '```'
+    echo "deploy.${DOMAIN}/          ← este repositório (compose, nginx, envs, hosts)"
+    echo "└── code/"
+    local _ult; _ult="$(ls -d "$DIR/code"/*/ 2>/dev/null | tail -1)"
+    for app in "$DIR/code"/*/; do
+      [[ -d "$app" ]] || continue
+      if [[ "$app" == "$_ult" ]]; then echo "    └── $(basename "$app")/   ← repositório próprio"
+      else                             echo "    ├── $(basename "$app")/   ← repositório próprio"; fi
+    done
+    echo '```'
+    echo
+    echo "## 1. Clonar este repositório"
+    echo
+    echo '```bash'
+    echo "git clone <url-deste-repo> deploy.${DOMAIN}"
+    echo "cd deploy.${DOMAIN}"
+    echo '```'
+    echo
+    echo "## 2. Clonar os apps dentro de \`code/\`"
+    echo
+    echo "Só os que você tem acesso — o ambiente sobe com um subconjunto."
+    echo
+    echo '```bash'
+    echo "mkdir -p code"
+    for app in "$DIR/code"/*/; do
+      [[ -d "$app" ]] || continue
+      echo "git clone <url> code/$(basename "$app")"
+    done
+    echo '```'
+    echo
+    echo "> ⚠️ **O nome do diretório importa.** O \`docker-compose.dev.yml\` monta"
+    echo "> \`./code/<nome>\` por caminho. Clonar com outro nome sobe o container com"
+    echo "> um diretório vazio dentro, e o erro fala de arquivo faltando, não de nome."
+    echo
+    echo "## 3. O env local"
+    echo
+    echo '```bash'
+    echo "cp .env.dev.example .env.dev"
+    echo '```'
+    echo
+    echo "Preencha as credenciais do banco. Elas não são as mesmas de quem gerou o"
+    echo "projeto: cada máquina tem a sua infra local. Para criar um banco novo:"
+    echo
+    echo '```bash'
+    echo "deploy-infra createdb ${SLUG}"
+    echo '```'
+    echo
+    echo "## 4. Conferir e subir"
+    echo
+    echo '```bash'
+    echo "deploy-doctor ."
+    echo "./deploy-run dev"
+    echo '```'
+    echo
+    echo "O \`deploy-doctor\` avisa se algum app ficou faltando em \`code/\` e se o"
+    echo "\`/etc/hosts\` está resolvendo os domínios."
+  } > "$f"
+  echo "  ${GREEN}+${NC} docs/onboarding.md   (para quem entrar depois)"
+}
+
 [[ -n "$KIT" ]] && { echo; echo "${BOLD}Apps do kit${NC}"; _instanciar_kit || exit 1; }
 
 if $APPLY; then
@@ -253,12 +362,20 @@ if $APPLY; then
       && echo "  ${GREEN}+${NC} artefatos de build nos apps" \
       || echo "  ${YELLOW}!${NC} rode deploy-app-scaffold ${DIR}/code --apply"
   fi
+
+  _escrever_onboarding
+
+  # Por último: o git init tem que enxergar tudo o que os passos acima criaram.
+  echo
+  echo "${BOLD}Árvore de repositórios${NC}"
+  _iniciar_repos
   echo
   # ⚠️ Sob o assistente esta lista vira RUÍDO: ele conduz os mesmos passos logo
   # em seguida, com outra numeração. Duas listas "1..5" na mesma tela mandando
   # coisas diferentes é pior do que nenhuma.
   if [[ -n "${DEPLOY_WIZARD:-}" ]]; then
     echo "${GREEN}${BOLD}Pronto.${NC} Projeto gerado em ${DIR}"
+    echo "  Para compartilhar depois: ${DIR}/docs/onboarding.md"
   else
     echo "${GREEN}${BOLD}Pronto.${NC} Próximos passos:"
     echo
@@ -285,6 +402,15 @@ if $APPLY; then
     echo "       docker exec ${SLUG}-php-api sh -c 'cd api.${DOMAIN} && php artisan dev:token'"
     echo "  ${n}. entrar sem o SSO: use o link que o comando acima imprime"
 
+    echo
+    echo "  ${BOLD}Publicar os repositórios${NC} — um por caixa, quando for compartilhar:"
+    echo "       cd ${DIR} && git remote add origin <url> && git push -u origin main"
+    for _a in "$DIR/code"/*/; do
+      [[ -d "$_a" ]] || continue
+      echo "       cd ${DIR}/code/$(basename "$_a") && git remote add origin <url> && git push -u origin main"
+    done
+    echo "     Cada app constrói a própria imagem a partir do próprio repositório."
+    echo "     Quem entrar no projeto depois segue ${DIR}/docs/onboarding.md."
     echo
     echo "  Depois disso: duplique docs/TEMPLATE.md e desenhe o produto."
     echo "  Produção: ${DIR}/docs/coolify-deploy.md"
