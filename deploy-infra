@@ -160,6 +160,28 @@ case "$CMD" in
       exit 1
     fi
 
+    # ⚠️ O `up` volta assim que os containers iniciam, mas o MySQL leva alguns
+    #    segundos para aceitar conexão. Quem seguisse o passo a passo direto
+    #    batia num "Falha ao criar o database" que culpava a senha — a senha
+    #    estava certa, o banco é que não estava pronto. Esperar aqui é melhor do
+    #    que pedir ao usuário que espere.
+    _mysql_health() {
+      docker ${CONTEXT:+--context "$CONTEXT"} inspect \
+        --format '{{.State.Health.Status}}' infra-mysql 2>/dev/null
+    }
+    if [[ "$(_mysql_health)" != "healthy" ]]; then
+      print_info "Aguardando o MySQL aceitar conexão..."
+      for _i in $(seq 1 60); do
+        [[ "$(_mysql_health)" == "healthy" ]] && break
+        sleep 2
+      done
+      if [[ "$(_mysql_health)" != "healthy" ]]; then
+        print_error "O infra-mysql não ficou saudável em 120s."
+        print_info  "Veja o que houve: deploy-infra logs"
+        exit 1
+      fi
+    fi
+
     # O SQL entra por stdin: a senha nunca aparece na linha de comando do container
     # (visível em `docker inspect` e no histórico do shell).
     sql="CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -170,7 +192,10 @@ FLUSH PRIVILEGES;"
     if ! printf '%s\n' "$sql" | docker ${CONTEXT:+--context "$CONTEXT"} exec -i \
          -e MYSQL_PWD="$root_pass" infra-mysql mariadb -uroot 2>/dev/null; then
       print_error "Falha ao criar o database '${DB_NAME}'."
-      print_info  "Confira MYSQL_ROOT_PASSWORD em ${ENV_FILE}."
+      print_info  "O MySQL está saudável, então o mais provável é a credencial:"
+      print_info  "  confira MYSQL_ROOT_PASSWORD em ${ENV_FILE}."
+      print_info  "Se o valor mudou depois do primeiro up, o volume guarda a senha"
+      print_info  "antiga — nesse caso: deploy-infra reset (apaga os dados)."
       exit 1
     fi
 
