@@ -125,6 +125,7 @@ EOF
 | `deploy-backup` | Baixa backup dos bancos do servidor, com retenção |
 | `envedit` | Edita envs criptografados com SOPS + age, encapsulando as flags que o formato exige |
 | `harden-vm` | Fecha a superfície de rede da VM: ufw, `DOCKER-USER`, fail2ban, SSH por chave |
+| `deploy-wizard` | Assistente interativo — guia a instalação do começo ao fim |
 | `deploy-doctor` | Verifica se a máquina consegue rodar o ambiente — rode **antes** de tudo |
 | `deploy-audit` | Varre vários projetos procurando env em texto puro, porta exposta, `chmod 777` |
 | `deploy-token-check` | Diagnostica o token de acesso ao registry |
@@ -698,6 +699,23 @@ Detectado sozinho, ou forçado com `--type`:
 
 > ⚠️ O template assume a base `iporto99/php-8-3` — a mesma do dev, o que garante
 > paridade de runtime. É nela que se muda versão de PHP e extensões, não aqui.
+
+---
+
+## `deploy-wizard` — Assistente interativo
+
+```bash
+./deploy-wizard
+```
+
+Guia a instalação do começo ao fim: detecta o que já existe, pergunta o domínio,
+gera as senhas, sobe a infra, cria o banco, gera o projeto e mostra como entrar.
+
+> ✅ **Ele roda os mesmos comandos do passo a passo, e mostra cada um antes de
+> executar.** Não é um instalador paralelo: se algo falhar, você continua
+> manualmente do ponto exato — porque viu o comando. Uma fonte de verdade só.
+
+Exige terminal interativo. Para automação, use os comandos diretamente.
 
 ---
 

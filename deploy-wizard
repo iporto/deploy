@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+################################################################################
+# deploy-wizard — assistente de instalação do ambiente
+#
+# Guia interativo que roda os MESMOS comandos do passo a passo, mostrando cada um
+# antes de executar. Não é um instalador paralelo: se algo falhar, você continua
+# manualmente do ponto exato, porque viu o comando.
+#
+# Uso:  ./deploy-wizard
+################################################################################
+
+case "${1:-}" in -h|--help) sed -n '5,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+
+RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m'; MAG=$'\033[0;35m'; CYAN=$'\033[0;36m'
+BOLD=$'\033[1m'; DIM=$'\033[2m'; NC=$'\033[0m'
+
+_box() {
+  local t="$1" s="$2"
+  printf '%s┌────────────────────────────────────────────────────────┐%s\n' "$MAG" "$NC"
+  printf '%s│%s %-54s %s│%s\n' "$MAG" "$NC$BOLD" "$t" "$NC$MAG" "$NC"
+  printf '%s├────────────────────────────────────────────────────────┤%s\n' "$MAG" "$NC"
+  printf '%s│%s %-54s %s│%s\n' "$MAG" "$NC" "$s" "$MAG" "$NC"
+  printf '%s│%s %-54s %s│%s\n' "$MAG" "$NC$DIM" "Ctrl+C a qualquer momento para sair." "$NC$MAG" "$NC"
+  printf '%s└────────────────────────────────────────────────────────┘%s\n' "$MAG" "$NC"
+}
+_titulo() { printf '\n%s◆ %s%s\n' "$CYAN$BOLD" "$1" "$NC"; }
+_info()   { printf '  %s\n' "$1"; }
+_ok()     { printf '  %s✓%s %s\n' "$GREEN" "$NC" "$1"; }
+_warn()   { printf '  %s!%s %s\n' "$YELLOW" "$NC" "$1"; }
+_erro()   { printf '  %s✗%s %s\n' "$RED" "$NC" "$1" >&2; }
+
+# ⚠️ TODO o texto destas funções vai para stderr. O stdout delas é o CANAL DE
+#    RETORNO — quem chama captura com $(...), e uma linha de prompt no stdout
+#    entraria na variável junto com a resposta.
+_ler() {
+  local __v="$1"
+  if { : </dev/tty; } 2>/dev/null; then read -r "$__v" </dev/tty || true
+  else read -r "$__v" || true; fi
+}
+
+# Pergunta com valor padrão. Enter aceita o padrão.
+_pergunta() {
+  local texto="$1" padrao="$2" resp=""
+  printf '\n%s%s%s\n' "$YELLOW" "$texto" "$NC" >&2
+  printf '  %s[%s]%s: ' "$DIM" "$padrao" "$NC" >&2
+  _ler resp
+  echo "${resp:-$padrao}"
+}
+
+# Menu numerado com marcador de selecionado, à la wizard.
+_menu() {
+  local titulo="$1" padrao="$2"; shift 2
+  local opcoes=("$@") i=1 resp=""
+  printf '\n%s%s%s\n' "$YELLOW$BOLD" "$titulo" "$NC" >&2
+  printf '  %sEscolha pelo número; Enter confirma o padrão.%s\n\n' "$DIM" "$NC" >&2
+  for o in "${opcoes[@]}"; do
+    if [[ $i -eq $padrao ]]; then printf '  %s(●)%s %s%d. %s%s\n' "$GREEN" "$NC" "$BOLD" "$i" "$o" "$NC" >&2
+    else                          printf '  %s(o)%s %d. %s\n' "$DIM" "$NC" "$i" "$o" >&2; fi
+    i=$((i+1))
+  done
+  printf '\n  Opção %s[padrão %d]%s: ' "$DIM" "$padrao" "$NC" >&2
+  _ler resp
+  resp="${resp:-$padrao}"
+  [[ "$resp" =~ ^[0-9]+$ ]] && [[ "$resp" -ge 1 && "$resp" -le ${#opcoes[@]} ]] || resp="$padrao"
+  echo "$resp"
+}
+
+# Mostra o comando antes de rodar. É o que mantém uma fonte de verdade só: se
+# falhar, a pessoa repete o comando que viu, sem depender do assistente.
+_rodar() {
+  printf '\n  %s$ %s%s\n' "$DIM" "$*" "$NC"
+  "$@"
+}
+
+_lib_dir() {
+  local src="${BASH_SOURCE[0]}"
+  while [[ -L "$src" ]]; do local d; d="$(cd -P "$(dirname "$src")" && pwd)"; src="$(readlink "$src")"; [[ "$src" != /* ]] && src="${d}/${src}"; done
+  cd -P "$(dirname "$src")" && pwd
+}
+LIB="$(_lib_dir)"
+export PATH="$LIB:$PATH"
+
+# Assistente sem terminal não tem como perguntar nada. Melhor recusar do que
+# seguir aceitando todos os padrões em silêncio.
+# `-r /dev/tty` não basta: o teste passa mesmo quando o dispositivo não abre.
+# A verificação honesta é tentar abri-lo.
+_tem_tty() { { : </dev/tty; } 2>/dev/null; }
+if ! _tem_tty && [[ ! -t 0 ]]; then
+  echo "${RED}O assistente precisa de um terminal interativo.${NC}" >&2
+  echo "Para automação, use os comandos diretamente — veja o README." >&2
+  exit 1
+fi
+
+clear 2>/dev/null || true
+_box "Starter Kit — Assistente de instalação" "Vamos preparar seu ambiente de desenvolvimento."
+
+cat <<TXT
+
+Vou te guiar por:
+  1. Verificar se a máquina dá conta
+  2. Subir a base compartilhada (Traefik, MariaDB, Redis, Mailpit)
+  3. Criar o banco do seu produto
+  4. Gerar o projeto a partir do kit
+  5. Subir e mostrar como entrar
+
+Cada comando aparece antes de rodar — se algo falhar, você continua do ponto exato.
+TXT
+printf '\n%sEnter para começar...%s' "$YELLOW" "$NC"; _ler _
+
+# ─── Detecção ────────────────────────────────────────────────────────────────
+_titulo "O que já existe nesta máquina"
+KIT_ENCONTRADO=""
+for c in ~/starter-kit ~/kit ./starter-kit; do
+  [[ -d "$c/code/api" && -d "$c/code/platform" ]] && { KIT_ENCONTRADO="$(cd "$c" && pwd)"; break; }
+done
+[[ -n "$KIT_ENCONTRADO" ]] && _ok "kit encontrado em ${KIT_ENCONTRADO}" || _warn "kit não encontrado — vou pedir o caminho"
+docker network inspect shared >/dev/null 2>&1 && _ok "rede 'shared' já existe" || _info "rede 'shared' será criada"
+docker ps --filter 'name=^infra-mysql$' --format '{{.Names}}' 2>/dev/null | grep -q . \
+  && _ok "infra já está no ar" || _info "infra será iniciada"
+
+MODO=$(_menu "Como você quer instalar?" 1 \
+  "Rápido — só o domínio do produto, o resto no padrão (recomendado)" \
+  "Completo — escolher caminhos e quais apps instalar")
+
+# ─── Respostas ───────────────────────────────────────────────────────────────
+DOMINIO=$(_pergunta "Qual o domínio do seu produto?" "acme.com")
+SLUG="${DOMINIO%%.*}"
+KIT="${KIT_ENCONTRADO:-$HOME/starter-kit}"
+PROJETO="$HOME/deploy.${DOMINIO}"
+APPS="api,platform"
+
+if [[ "$MODO" == "2" ]]; then
+  KIT=$(_pergunta "Onde está o clone do kit?" "$KIT")
+  PROJETO=$(_pergunta "Onde criar o projeto?" "$PROJETO")
+  R=$(_menu "Quais apps instalar?" 1 "api + platform (mínimo do kit)" "api + platform + www (com site institucional)")
+  [[ "$R" == "2" ]] && APPS="api,platform,www"
+fi
+
+_titulo "Confirmação"
+_info "Produto:   ${BOLD}${DOMINIO}${NC}  (dev: ${SLUG}.test)"
+_info "Kit:       ${KIT}"
+_info "Projeto:   ${PROJETO}"
+_info "Apps:      ${APPS}"
+R=$(_menu "Posso seguir?" 1 "Sim, instalar" "Não, sair")
+[[ "$R" == "2" ]] && { _info "Cancelado. Nada foi alterado."; exit 0; }
+
+# ─── 1. Doctor ───────────────────────────────────────────────────────────────
+_titulo "1/5 — Verificando a máquina"
+if ! _rodar deploy-doctor; then
+  _erro "O diagnóstico encontrou bloqueios. Resolva-os e rode o assistente de novo."
+  exit 1
+fi
+
+# ─── 2. Infra ────────────────────────────────────────────────────────────────
+_titulo "2/5 — Base compartilhada"
+ENVI="${LIB}/infra/.env.dev"
+if [[ ! -f "$ENVI" ]]; then
+  deploy-infra up >/dev/null 2>&1 || true   # cria o template
+fi
+if [[ -f "$ENVI" ]] && ! grep -qE '^MYSQL_ROOT_PASSWORD=".+"' "$ENVI"; then
+  _info "Gerando senhas locais com ${BOLD}openssl rand -hex 24${NC}..."
+  for k in MYSQL_ROOT_PASSWORD REDIS_PASSWORD; do
+    v="$(openssl rand -hex 24 2>/dev/null || head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)"
+    if sed --version >/dev/null 2>&1; then sed -i "s|^${k}=.*|${k}=\"${v}\"|" "$ENVI"
+    else sed -i '' "s|^${k}=.*|${k}=\"${v}\"|" "$ENVI"; fi
+  done
+  _ok "senhas geradas em ${ENVI}"
+fi
+_rodar deploy-infra up || { _erro "Falha ao subir a infra. Veja: deploy-infra logs"; exit 1; }
+
+# ─── 3. Banco ────────────────────────────────────────────────────────────────
+_titulo "3/5 — Banco do produto"
+DBENV="$(mktemp)"
+if ! _rodar deploy-infra createdb "$SLUG" --print-env > "$DBENV"; then
+  _erro "Falha ao criar o banco."; exit 1
+fi
+_ok "database, usuário e senha criados para '${SLUG}'"
+
+# ─── 4. Projeto ──────────────────────────────────────────────────────────────
+_titulo "4/5 — Gerando o projeto"
+if [[ ! -d "$KIT/code/api" ]]; then
+  _info "Clonando o kit em ${KIT}..."
+  _rodar git clone --quiet https://github.com/Codijo/starter-kit.spelt.com.br.git "$KIT" \
+    || { _erro "Falha ao clonar o kit."; exit 1; }
+fi
+if [[ -e "$PROJETO" ]]; then
+  _warn "${PROJETO} já existe — pulando a geração."
+else
+  _rodar deploy-project-scaffold "$DOMINIO" --from-kit "$KIT" --dir "$PROJETO" \
+     --db-env "$DBENV" --apps "$APPS" --apply || { _erro "Falha ao gerar o projeto."; exit 1; }
+fi
+rm -f "$DBENV"
+
+# ─── 5. Subir ────────────────────────────────────────────────────────────────
+_titulo "5/5 — Antes de subir: o /etc/hosts"
+cat <<TXT
+
+  Estas linhas precisam estar no /etc/hosts ${BOLD}da máquina onde roda o navegador${NC}:
+
+TXT
+grep -vE '^#|^$' "$PROJETO/hosts" | sed 's/^/      /'
+cat <<TXT
+
+  ${YELLOW}Sem elas você não toma erro${NC} — o .test não resolve e o navegador vai para a
+  internet. O sintoma não aponta para a causa.
+
+  Se o navegador roda AQUI:
+      sudo sh -c 'cat ${PROJETO}/hosts >> /etc/hosts'
+
+TXT
+R=$(_menu "Já configurou o hosts?" 1 "Sim, pode subir o ambiente" "Ainda não — paro aqui e subo depois")
+if [[ "$R" == "2" ]]; then
+  _titulo "Pronto até aqui"
+  _info "Quando configurar o hosts, continue com:"
+  _info "  cd ${PROJETO} && ./deploy-run dev"
+  exit 0
+fi
+
+cd "$PROJETO" || exit 1
+_rodar ./deploy-run dev || { _erro "Falha ao subir. Veja: cd ${PROJETO} && ./deploy-run dev"; exit 1; }
+
+# ─── Final ───────────────────────────────────────────────────────────────────
+echo
+_box "Instalação concluída" "Seu ambiente está no ar."
+cat <<TXT
+
+${BOLD}${GREEN}Onde ficou tudo${NC}
+  Projeto:    ${PROJETO}
+  Apps:       ${PROJETO}/code/
+  Infra:      ${LIB}/infra/  (compartilhada por todos os seus produtos)
+  Brief:      ${PROJETO}/docs/TEMPLATE.md
+
+${BOLD}${YELLOW}Falta um passo — as dependências ainda estão instalando${NC}
+  Confira quando terminarem:
+      deploy-doctor ${PROJETO}
+
+  Depois, para migrar e entrar:
+      docker exec ${SLUG}-php-api sh -c 'cd api.${DOMINIO} && php artisan migrate --force'
+      docker exec ${SLUG}-php-api sh -c 'cd api.${DOMINIO} && php artisan dev:token'
+
+  O último comando imprime um link pronto para entrar no painel, sem conta no Spelt.
+
+${BOLD}${CYAN}No dia a dia${NC}
+  cd ${PROJETO} && ./deploy-run dev        subir o projeto
+  ./deploy-run dev stop                     parar
+  deploy-infra status                       o que está no ar
+  deploy-doctor ${PROJETO}                  diagnosticar
+
+${BOLD}Construir o produto${NC}
+  Duplique ${PROJETO}/docs/TEMPLATE.md e desenhe o seu SaaS. É aí que
+  aparecem as necessidades reais — e a conta no Spelt.
+
+TXT
