@@ -21,6 +21,8 @@ set -uo pipefail
 #   --ip IP          IP para o arquivo hosts  (padrão: 192.168.66.1)
 #   --apps LISTA     api,platform | api,platform,www   (padrão: api,platform)
 #   --dir DIR        onde criar               (padrão: ./deploy.<dominio>)
+#   --from-kit DIR   instancia os apps a partir de um checkout do kit
+#   --db-env FILE    aplica as credenciais geradas pelo `deploy-infra createdb`
 #   --apply          escreve de fato
 ################################################################################
 
@@ -33,6 +35,7 @@ BLUE=$'\033[0;34m'; BOLD=$'\033[1m'; NC=$'\033[0m'
 
 DOMAIN="$1"; shift
 SLUG=""; DEVDOMAIN=""; DEVIP="192.168.66.1"; APPS="api,platform"; DIR=""; APPLY=false
+KIT=""; DB_ENV=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --slug)       SLUG="$2"; shift 2 ;;
@@ -40,6 +43,8 @@ while [[ $# -gt 0 ]]; do
     --ip)         DEVIP="$2"; shift 2 ;;
     --apps)       APPS="$2"; shift 2 ;;
     --dir)        DIR="$2"; shift 2 ;;
+    --from-kit)   KIT="$2"; shift 2 ;;
+    --db-env)     DB_ENV="$2"; shift 2 ;;
     --apply)      APPLY=true; shift ;;
     *) echo "Opção desconhecida: $1" >&2; exit 2 ;;
   esac
@@ -68,6 +73,12 @@ _scripts_dir() {
 }
 LIB="$(_scripts_dir)"; TPL="${LIB}/template/deploy-project"
 [[ -d "$TPL" ]] || { echo "${RED}Template não encontrado: ${TPL}${NC}" >&2; exit 1; }
+if [[ -n "$KIT" ]]; then
+  [[ -d "$KIT/code/api" && -d "$KIT/code/platform" ]] || {
+    echo "${RED}Não parece um checkout do kit: ${KIT}${NC}" >&2
+    echo "Esperava encontrar code/api e code/platform." >&2; exit 1; }
+fi
+[[ -z "$DB_ENV" || -f "$DB_ENV" ]] || { echo "${RED}--db-env: arquivo não encontrado: ${DB_ENV}${NC}" >&2; exit 1; }
 
 echo "${BOLD}Projeto${NC}        ${DOMAIN}   (slug: ${SLUG})"
 echo "${BOLD}Dev${NC}            ${DEVDOMAIN}   → ${DEVIP}"
@@ -112,19 +123,121 @@ done
 echo "  ${GREEN}+${NC} .env.dev            (cópia local do .example, gitignored)"
 echo "  ${GREEN}+${NC} code/               (checkouts dos repos de app)"
 
+################################################################################
+# Instanciar o kit como produto
+#
+# O kit entrega code/api e code/platform genéricos. Aqui eles viram os apps deste
+# produto: renomeados pelo domínio, e com os envs apontando para a infra local.
+################################################################################
+_instanciar_kit() {
+  local app dst
+  for app in $(echo "$APPS" | tr ',' ' '); do
+    [[ -d "$KIT/code/$app" ]] || { echo "  ${YELLOW}!${NC} kit não tem code/${app} — pulando"; continue; }
+    dst="$DIR/code/${app}.${DOMAIN}"
+    echo "  ${GREEN}+${NC} code/${app}.${DOMAIN}"
+    $APPLY || continue
+
+    # ⚠️ As exclusões não são conveniência: um .env do checkout do kit carrega
+    #    credenciais de quem o clonou. A verificação depois da cópia existe
+    #    porque uma exclusão silenciosamente errada vazaria segredo em cada
+    #    produto gerado — e ninguém perceberia.
+    mkdir -p "$dst"
+    # ⚠️ A ORDEM das regras importa: o rsync aplica a PRIMEIRA que casa. O
+    #    --include do .env.example precisa vir ANTES do --exclude '.env.*',
+    #    senão o template do app não é copiado e o app nasce sem env nenhum.
+    rsync -a --quiet \
+      --include '.env.example' \
+      --exclude '.env' --exclude '.env.*' \
+      --exclude '.git/' --exclude '.github/' \
+      --exclude 'vendor/' --exclude 'node_modules/' \
+      "$KIT/code/$app/" "$dst/" 2>/dev/null || { print_falha "rsync de $app"; return 1; }
+
+    if find "$dst" -name '.env' -o -name '.env.local' | grep -q .; then
+      echo "${RED}ABORTADO: um .env foi copiado do kit para ${dst}.${NC}" >&2
+      echo "Isso levaria credenciais de outra pessoa para dentro deste produto." >&2
+      return 1
+    fi
+    _reescrever_env "$dst" "$app"
+  done
+}
+
+# Aponta o .env.example do app para a infra local e para este produto.
+_reescrever_env() {
+  local dst="$1" app="$2" f="$1/.env.example"
+  [[ -f "$f" ]] || return 0
+  local titulo; titulo="$(echo "${SLUG:0:1}" | tr '[:lower:]' '[:upper:]')${SLUG:1}"
+  # DB_HOST=127.0.0.1 é a armadilha silenciosa: dentro do container isso é o
+  # PRÓPRIO container, não o MySQL. E o init-laravel.sh copia este arquivo para
+  # .env sozinho, então o app subiria apontando para o lugar errado sem avisar.
+  sed -i '' \
+    -e "s|^DB_HOST=.*|DB_HOST=infra-mysql|" \
+    -e "s|^REDIS_HOST=.*|REDIS_HOST=infra-redis|" \
+    -e "s|^MAIL_HOST=.*|MAIL_HOST=infra-mail|" \
+    -e "s|^DB_DATABASE=.*|DB_DATABASE=${SLUG}|" \
+    -e "s|^APP_URL=.*|APP_URL=http://${app}.${DEVDOMAIN}|" \
+    -e "s|^APP_NAME=.*|APP_NAME=\"${titulo} $(echo "${app:0:1}" | tr '[:lower:]' '[:upper:]')${app:1}\"|" \
+    -e "s|^VITE_URL=.*|VITE_URL=http://${app}.${DEVDOMAIN}|" \
+    -e "s|^VITE_HMR_HOST=.*|VITE_HMR_HOST=${app}.${DEVDOMAIN}|" \
+    "$f"
+  # Credenciais do createdb, quando fornecidas.
+  if [[ -n "$DB_ENV" ]]; then
+    local k v
+    while IFS='=' read -r k v; do
+      [[ -n "$k" ]] && sed -i '' "s|^${k}=.*|${k}=${v}|" "$f"
+    done < "$DB_ENV"
+  fi
+}
+print_falha() { echo "${RED}Falha: $*${NC}" >&2; }
+
+[[ -n "$KIT" ]] && { echo; echo "${BOLD}Apps do kit${NC}"; _instanciar_kit || exit 1; }
+
 if $APPLY; then
   cp "$DIR/.env.dev.example" "$DIR/.env.dev"; chmod 600 "$DIR/.env.dev"
   mkdir -p "$DIR/code"
-  "${LIB}/deploy-shim-install" "$DIR" --apply --all-verbs >/dev/null 2>&1 \
-    && echo "  ${GREEN}+${NC} verbos de deploy (shim)" \
+  # Só os dois verbos que a trilha Coolify usa. Os outros servem ao ciclo
+  # :prd + Watchtower e não fazem nada aqui.
+  "${LIB}/deploy-shim-install" "$DIR" --apply --all-verbs \
+      --verbs deploy-run,deploy-sync >/dev/null 2>&1 \
+    && echo "  ${GREEN}+${NC} verbos: deploy-run, deploy-sync" \
     || echo "  ${YELLOW}!${NC} falha ao instalar os verbos — rode deploy-shim-install à mão"
+
+  # O TEMPLATE.md é o ponto de partida do segundo momento: com o ambiente no ar,
+  # o dev duplica isto para desenhar o próprio produto.
+  if [[ -n "$KIT" && -f "$KIT/docs/starter-kit-ideas/TEMPLATE.md" ]]; then
+    mkdir -p "$DIR/docs"
+    cp "$KIT/docs/starter-kit-ideas/TEMPLATE.md" "$DIR/docs/TEMPLATE.md"
+    echo "  ${GREEN}+${NC} docs/TEMPLATE.md"
+  fi
+
+  # Artefatos de build nos apps copiados (Dockerfile, .deploy/, workflow).
+  if [[ -n "$KIT" && -x "${LIB}/deploy-app-scaffold" ]]; then
+    "${LIB}/deploy-app-scaffold" "$DIR/code" --apply >/dev/null 2>&1 \
+      && echo "  ${GREEN}+${NC} artefatos de build nos apps" \
+      || echo "  ${YELLOW}!${NC} rode deploy-app-scaffold ${DIR}/code --apply"
+  fi
   echo
   echo "${GREEN}${BOLD}Pronto.${NC} Próximos passos:"
-  echo "  1. preencher ${DIR}/.env.dev  (REMOTE_HOST, REMOTE_BASE_PATH, senhas locais)"
-  echo "  2. clonar os apps em ${DIR}/code/  (api.${DOMAIN}, platform.${DOMAIN})"
-  echo "  3. equipar os apps:  deploy-app-scaffold ${DIR}/code --apply"
-  echo "  4. acrescentar as linhas de ${DIR}/hosts ao seu /etc/hosts"
-  echo "  5. produção: seguir ${DIR}/docs/coolify-deploy.md"
+  echo
+  n=1
+  if [[ -z "$KIT" ]]; then
+    echo "  ${n}. clonar os apps em ${DIR}/code/ (api.${DOMAIN}, platform.${DOMAIN})"; n=$((n+1))
+    echo "  ${n}. equipar os apps:  deploy-app-scaffold ${DIR}/code --apply"; n=$((n+1))
+  fi
+  if [[ -z "$DB_ENV" ]]; then
+    echo "  ${n}. criar o banco:    deploy-infra createdb ${SLUG}"
+    echo "     e colar as credenciais nos .env.example dos apps"; n=$((n+1))
+  fi
+  # ⚠️ Sem esta linha o navegador não erra: vai para a internet. Sintoma que não
+  #    aponta para a causa — por isso é passo explícito, não nota de rodapé.
+  echo "  ${n}. ${BOLD}editar o /etc/hosts${NC} — a máquina onde roda o NAVEGADOR:"; n=$((n+1))
+  sed "s/^/       /" "${DIR}/hosts" 2>/dev/null | grep -v '^\s*#' | grep -v '^\s*$'
+  echo "  ${n}. subir:            cd ${DIR} && ./deploy-run dev"; n=$((n+1))
+  echo "  ${n}. migrar:           docker compose exec php-api php artisan migrate"; n=$((n+1))
+  echo "  ${n}. entrar sem Spelt: gere um token e acesse"
+  echo "     http://platform.${DEVDOMAIN}/auth/dev-login?token=SEU_TOKEN"
+  echo
+  echo "  Depois disso: duplique docs/TEMPLATE.md e desenhe o produto."
+  echo "  Produção: ${DIR}/docs/coolify-deploy.md"
 else
   echo; echo "${YELLOW}Rode com --apply para escrever.${NC}"
 fi
