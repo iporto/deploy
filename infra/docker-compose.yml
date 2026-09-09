@@ -45,7 +45,7 @@ services:
     command:
       - --default-time-zone=${TZ:-UTC}
       - --max-connections=150
-      # Ajustado para estação de trabalho — na VM do Otávio é 2G.
+      # Dimensionado para estação de trabalho. Num servidor dedicado, aumente.
       - --innodb-buffer-pool-size=${MYSQL_BUFFER_POOL:-256M}
       - --innodb-flush-log-at-trx-commit=2
       - --character-set-server=utf8mb4

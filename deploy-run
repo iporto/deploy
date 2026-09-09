@@ -166,6 +166,24 @@ case "$(uname -m)" in
   arm*)           export DOCKER_DEFAULT_PLATFORM="linux/arm64" ;;
 esac
 
+# ─── Profiles extras ─────────────────────────────────────────────────────────
+#
+# O compose sobe com --profile $APP_ENV. Serviços opcionais (o env-www do kit,
+# por exemplo) vivem em profiles próprios e ficam inertes até serem pedidos.
+#
+# Ativar é acrescentar o nome em COMPOSE_EXTRA_PROFILES no .env — sem editar o
+# docker-compose.yml, o que preservaria qualquer ajuste local do desenvolvedor.
+#
+#   COMPOSE_EXTRA_PROFILES=www
+_extra_profiles=()
+_load_extra_profiles() {
+  [[ -n "${COMPOSE_EXTRA_PROFILES:-}" ]] || return 0
+  local IFS=','
+  for _p in $COMPOSE_EXTRA_PROFILES; do
+    [[ -n "$_p" ]] && _extra_profiles+=(--profile "$_p")
+  done
+}
+
 # Detecta docker compose v2 ou cai em docker-compose v1
 if docker compose version >/dev/null 2>&1; then
   DC=(docker compose)
@@ -196,6 +214,8 @@ fi
 set -o allexport
 source "$ENV_SOURCE"
 set +o allexport
+
+_load_extra_profiles
 
 # ─── REMOTE_BASE_PATH é relativo ao DAEMON, não a esta máquina ────────────────
 #
@@ -369,11 +389,11 @@ if [[ "$CMD" == "--fresh" || "$CMD" == "-f" ]]; then
     exit 0
   fi
   print_warning "Removendo containers e volumes do ambiente: ${APP_ENV}..."
-  "${DC[@]}" --profile "$APP_ENV" "${FILES[@]}" -p "$PROJECT_NAME" down -v --remove-orphans
+  "${DC[@]}" --profile "$APP_ENV" ${_extra_profiles[@]+"${_extra_profiles[@]}"} "${FILES[@]}" -p "$PROJECT_NAME" down -v --remove-orphans
   print_info "Tudo removido. Recriando do zero..."
-  "${DC[@]}" --profile "$APP_ENV" "${FILES[@]}" config
-  [[ "$NO_PULL" == false ]] && "${DC[@]}" --profile "$APP_ENV" "${FILES[@]}" -p "$PROJECT_NAME" pull
-  "${DC[@]}" --profile "$APP_ENV" "${FILES[@]}" -p "$PROJECT_NAME" up -d --remove-orphans --force-recreate --build
+  "${DC[@]}" --profile "$APP_ENV" ${_extra_profiles[@]+"${_extra_profiles[@]}"} "${FILES[@]}" config
+  [[ "$NO_PULL" == false ]] && "${DC[@]}" --profile "$APP_ENV" ${_extra_profiles[@]+"${_extra_profiles[@]}"} "${FILES[@]}" -p "$PROJECT_NAME" pull
+  "${DC[@]}" --profile "$APP_ENV" ${_extra_profiles[@]+"${_extra_profiles[@]}"} "${FILES[@]}" -p "$PROJECT_NAME" up -d --remove-orphans --force-recreate --build
   print_success "Ambiente recriado com sucesso!"
   docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep "$PROJECT_NAME" || true
   exit 0
@@ -381,22 +401,22 @@ fi
 
 if [[ "$CMD" == "stop" ]]; then
   print_info "Parando containers do ambiente: ${APP_ENV}..."
-  "${DC[@]}" --profile "$APP_ENV" "${FILES[@]}" -p "$PROJECT_NAME" down
+  "${DC[@]}" --profile "$APP_ENV" ${_extra_profiles[@]+"${_extra_profiles[@]}"} "${FILES[@]}" -p "$PROJECT_NAME" down
   print_success "Containers parados com sucesso."
   exit 0
 fi
 
 if [[ -n "$CMD" ]]; then
   print_info "Reiniciando serviço: ${CMD}..."
-  [[ "$NO_PULL" == false ]] && "${DC[@]}" --profile "$APP_ENV" "${FILES[@]}" -p "$PROJECT_NAME" pull "$CMD"
-  "${DC[@]}" --profile "$APP_ENV" "${FILES[@]}" -p "$PROJECT_NAME" up -d --build --force-recreate "$CMD"
+  [[ "$NO_PULL" == false ]] && "${DC[@]}" --profile "$APP_ENV" ${_extra_profiles[@]+"${_extra_profiles[@]}"} "${FILES[@]}" -p "$PROJECT_NAME" pull "$CMD"
+  "${DC[@]}" --profile "$APP_ENV" ${_extra_profiles[@]+"${_extra_profiles[@]}"} "${FILES[@]}" -p "$PROJECT_NAME" up -d --build --force-recreate "$CMD"
   exit 0
 fi
 
 print_info "Subindo ambiente ${APP_ENV}..."
-"${DC[@]}" --profile "$APP_ENV" "${FILES[@]}" config
-[[ "$NO_PULL" == false ]] && "${DC[@]}" --profile "$APP_ENV" "${FILES[@]}" -p "$PROJECT_NAME" pull
-"${DC[@]}" --profile "$APP_ENV" "${FILES[@]}" -p "$PROJECT_NAME" up -d --remove-orphans --force-recreate --build
+"${DC[@]}" --profile "$APP_ENV" ${_extra_profiles[@]+"${_extra_profiles[@]}"} "${FILES[@]}" config
+[[ "$NO_PULL" == false ]] && "${DC[@]}" --profile "$APP_ENV" ${_extra_profiles[@]+"${_extra_profiles[@]}"} "${FILES[@]}" -p "$PROJECT_NAME" pull
+"${DC[@]}" --profile "$APP_ENV" ${_extra_profiles[@]+"${_extra_profiles[@]}"} "${FILES[@]}" -p "$PROJECT_NAME" up -d --remove-orphans --force-recreate --build
 
 print_success "Ambiente iniciado com sucesso!"
 echo -e "${BLUE}Containers em execução:${NC}"

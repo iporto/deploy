@@ -1,6 +1,5 @@
 services:
   nginx:
-    platform: linux/amd64
     image: iporto99/nginx:latest
     container_name: ${APP_PROJECT_NAME}-nginx
     profiles:
@@ -13,6 +12,7 @@ services:
     working_dir: /var/www/html
     # O Traefik vai rotear o tráfego internamente via rede Docker.
     volumes:
+      - ${REMOTE_BASE_PATH}/code/www.__DOMAIN__:/var/www/html/www.__DOMAIN__:rw
       - ${REMOTE_BASE_PATH}/code/api.__DOMAIN__:/var/www/html/api.__DOMAIN__:rw
       - ${REMOTE_BASE_PATH}/code/platform.__DOMAIN__:/var/www/html/platform.__DOMAIN__:rw      
       # Configurações do Nginx
@@ -26,6 +26,7 @@ services:
         aliases:
           - api.__DEVDOMAIN__
           - platform.__DEVDOMAIN__
+          - www.__DEVDOMAIN__
     depends_on:
       - php
     labels:
@@ -34,6 +35,7 @@ services:
       # O Nginx internamente decidirá qual site servir baseado no 'server_name' dos arquivos .conf
       - >-
         traefik.http.routers.${APP_PROJECT_NAME}.rule=
+        Host(`__DEVDOMAIN__`) || Host(`www.__DEVDOMAIN__`) ||
         Host(`api.__DEVDOMAIN__`) || 
         Host(`platform.__DEVDOMAIN__`)        
       - "traefik.http.routers.${APP_PROJECT_NAME}.priority=10"
@@ -47,7 +49,6 @@ services:
       start_period: 30s
 
   php:
-    platform: linux/amd64
     image: iporto99/php-8-3:latest
     container_name: ${APP_PROJECT_NAME}-php
     profiles:
@@ -59,6 +60,7 @@ services:
       - ALLOW_OVERRIDE=true
     working_dir: /var/www/html
     volumes:
+      - ${REMOTE_BASE_PATH}/code/www.__DOMAIN__:/var/www/html/www.__DOMAIN__:rw
       - ${REMOTE_BASE_PATH}/code/api.__DOMAIN__:/var/www/html/api.__DOMAIN__:rw
       - ${REMOTE_BASE_PATH}/code/platform.__DOMAIN__:/var/www/html/platform.__DOMAIN__:rw
       # Configurações do PHP e do PHP-FPM
@@ -70,7 +72,6 @@ services:
     restart: unless-stopped
 
   php-api:
-    platform: linux/amd64
     image: iporto99/php-8-3:latest
     container_name: ${APP_PROJECT_NAME}-php-api
     profiles:
@@ -89,7 +90,6 @@ services:
     command: sh -c "chown 1000:1000 api.__DOMAIN__ -R && cd api.__DOMAIN__ && ./init-laravel.sh && tail -f /dev/null"
 
   php-console:
-    platform: linux/amd64
     image: iporto99/php-8-3:latest
     container_name: ${APP_PROJECT_NAME}-php-console
     profiles:
@@ -124,8 +124,34 @@ services:
       retries: 3
       start_period: 30s
 
+  env-www:
+    image: iporto99/php-8-3:latest
+    container_name: ${APP_PROJECT_NAME}-env-www
+    # Fora do profile "development" de propósito: o www é opcional no kit.
+    # Ative com COMPOSE_EXTRA_PROFILES=www no .env.dev — sem editar este arquivo.
+    profiles:
+      - "www"
+    environment:
+      - PUID=${APP_UID}
+      - PGID=${APP_GID}
+      - TZ=UTC
+      - ALLOW_OVERRIDE=true
+    working_dir: /var/www/html
+    volumes:
+      - ${REMOTE_BASE_PATH}/code/www.__DOMAIN__:/var/www/html/www.__DOMAIN__:rw
+    networks:
+      - shared
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${APP_PROJECT_NAME}-vite-www.rule=(Host(`www.__DEVDOMAIN__`)) && (PathPrefix(`/@vite`) || PathPrefix(`/resources`) || PathPrefix(`/node_modules`) || PathPrefix(`/@id`) || PathPrefix(`/@fs`))"
+      - "traefik.http.routers.${APP_PROJECT_NAME}-vite-www.priority=100"
+      - "traefik.http.services.${APP_PROJECT_NAME}-vite-www.loadbalancer.server.port=5173"
+      # Middleware para WebSocket (necessário para HMR do Vite)
+      - "traefik.http.middlewares.${APP_PROJECT_NAME}-vite-www-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+    restart: unless-stopped
+    command: sh -c "chown 1000:1000 www.__DOMAIN__ -R && cd www.__DOMAIN__ && ./init-laravel.sh && npm run dev -- --host 0.0.0.0"
+
   env-platform:
-    platform: linux/amd64
     image: iporto99/php-8-3:latest
     container_name: ${APP_PROJECT_NAME}-env-platform
     profiles:

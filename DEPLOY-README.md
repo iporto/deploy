@@ -18,7 +18,7 @@ Toda mudança que chega em produção vem por **um de dois caminhos**, e confund
    CÓDIGO                                    CONFIGURAÇÃO
    (o que a aplicação faz)                   (como ela roda)
 
-   git push na main                          você edita no seu Mac
+   git push na main                          você edita na sua máquina
         │                                         │
         ▼                                         ▼
    GitHub Actions constrói                   ./deploy <ambiente>

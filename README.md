@@ -55,7 +55,7 @@ Ele assume um cenário específico. Se algum item não bate, provavelmente não 
 | `docker` | Gerenciamento de containers | [docker.com](https://docker.com) |
 | `docker compose` v2 **ou** `docker-compose` v1 | Orquestração | Incluso no Docker Desktop |
 | `rsync` | Transferência de arquivos | `brew install rsync` |
-| `ssh` | Acesso remoto | Incluso no macOS |
+| `ssh` | Acesso remoto | Incluso no macOS e Linux |
 | `envsubst` | Substituição de variáveis | `brew install gettext` |
 
 ---
@@ -108,7 +108,7 @@ EOF
 |---|---|
 | `deploy` | Orquestra o deploy para todas as VMs do ambiente, lendo `servers.yml` |
 | `deploy-sync` | Envia o projeto por rsync, entrega os envs decriptados e dispara o `deploy-run` |
-| `deploy-run` | Sobe, para e reconstrói os containers — roda no seu Mac ou na VM |
+| `deploy-run` | Sobe, para e reconstrói os containers — roda na sua máquina ou na VM |
 | `deploy-promote` | Promove uma imagem já construída para produção, com rollback por SHA |
 | `deploy-backup` | Baixa backup dos bancos do servidor, com retenção |
 | `envedit` | Edita envs criptografados com SOPS + age, encapsulando as flags que o formato exige |

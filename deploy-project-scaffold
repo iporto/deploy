@@ -46,11 +46,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 SLUG="${SLUG:-${DOMAIN%%.*}}"
-DEVDOMAIN="${DEVDOMAIN:-${SLUG}.io}"
+# TLD de dev: .test é reservado pela RFC 6761 — nunca será domínio real, e não
+# está na lista HSTS preload (foi isso que inviabilizou o .dev).
+DEVDOMAIN="${DEVDOMAIN:-${SLUG}.test}"
 DIR="${DIR:-./deploy.${DOMAIN}}"
+# Um compose só: o env-www vive no profile "www" e fica inerte até ser pedido.
+COMPOSE="docker-compose.dev.yml"
 case "$APPS" in
-  api,platform)     COMPOSE="docker-compose.dev.api-platform.yml"; WWW=false ;;
-  api,platform,www) COMPOSE="docker-compose.dev.api-platform-www.yml"; WWW=true ;;
+  api,platform)     WWW=false ;;
+  api,platform,www) WWW=true ;;
   *) echo "${RED}--apps aceita 'api,platform' ou 'api,platform,www'${NC}" >&2; exit 2 ;;
 esac
 
@@ -81,7 +85,7 @@ _render() { sed -e "s/__DOMAIN__/${DOMAIN}/g" -e "s/__DEVDOMAIN__/${DEVDOMAIN}/g
 
 # origem|destino
 FILES=(
-  "${COMPOSE}|docker-compose.dev.yml"
+  "docker-compose.dev.yml|docker-compose.dev.yml"
   ".env.dev.example|.env.dev.example"
   ".gitignore|.gitignore"
   ".rsyncignore|.rsyncignore"
