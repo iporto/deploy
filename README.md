@@ -1,14 +1,46 @@
-# deploy
+<h1 align="center">deploy</h1>
 
-Scripts de shell para publicar projetos **Docker Compose** numa VM por SSH e rsync.
-Sem agente no servidor, sem painel, sem plataforma: um punhado de scripts que você
-lê em uma tarde e um `.env` por ambiente.
+<p align="center">
+  <strong>Publique projetos Docker Compose numa VM por SSH e rsync.<br>
+  Sem agente no servidor, sem painel, sem plataforma.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/iporto/deploy/releases"><img alt="Última versão" src="https://img.shields.io/github/v/release/iporto/deploy?label=vers%C3%A3o&color=2ea44f"></a>
+  <a href="LICENSE"><img alt="Licença MIT" src="https://img.shields.io/badge/licen%C3%A7a-MIT-blue"></a>
+  <img alt="Shell" src="https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white">
+  <img alt="macOS e Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Linux-000000?logo=apple&logoColor=white">
+</p>
+
+Um punhado de scripts que você lê em uma tarde e um `.env` por ambiente.
 
 ```bash
 ./deploy prd          # sincroniza o projeto com o servidor e sobe os containers
 ./deploy-backup prd   # traz um dump dos bancos do servidor
 ./envedit prd         # edita o .env criptografado em texto puro
 ```
+
+---
+
+## Índice
+
+**Comece por aqui**
+
+- [O problema que ele resolve](#o-problema-que-ele-resolve)
+- [Isto serve para você?](#isto-serve-para-você)
+- [Como o ambiente foi desenhado](#como-o-ambiente-foi-desenhado)
+- [Pré-requisitos](#pré-requisitos) · [Instalação](#instalação) · [Fixar uma versão](#fixar-uma-versão)
+- [Os scripts](#os-scripts) — a tabela de tudo, em uma tela
+- [Aviso](#aviso) — leia antes de rodar em algo que te importa
+- [Como atualizar os scripts](#como-atualizar-os-scripts)
+- [Documentação](#documentação) · [Licença](#licença)
+
+[**Referência dos comandos**](#referência-dos-comandos) — flags, variáveis e exemplos
+
+- [`deploy`](#deploy--deploy-multi-servidor) · [`deploy-sync`](#deploy-sync--sincronizador-com-servidor-remoto) · [`deploy-run`](#deploy-run--gerenciador-de-containers) · [`deploy-promote`](#deploy-promote--liberar-imagem-em-produção)
+- [`deploy-backup`](#deploy-backup--backup-por-container) · [`envedit`](#envedit--envs-criptografados-sops--age) · [`harden-vm`](#harden-vm--fecha-a-superfície-de-rede-da-vm)
+- [`deploy-wizard`](#deploy-wizard--assistente-interativo) · [`deploy-doctor`](#deploy-doctor--verificação-de-pré-voo) · [`deploy-audit`](#deploy-audit--auditoria-multi-projeto) · [`deploy-token-check`](#deploy-token-check--valida-o-personal_access_token)
+- [`deploy-shim-install`](#deploy-shim-install--instala-o-shim-de-bootstrap) · [`deploy-app-scaffold`](#deploy-app-scaffold--artefatos-de-build-no-repo-do-app) · [`deploy-project-scaffold`](#deploy-project-scaffold--cria-o-repo-de-um-projeto-novo)
 
 ---
 
@@ -56,7 +88,9 @@ contexto Docker e o `prd` não, por que o pin de plataforma sai de umas imagens 
 fica em outras, e os doze defeitos que só apareceram ao rodar o fluxo numa
 máquina limpa.
 
-Leia antes de mudar o desenho.
+> [!TIP]
+> Leia esse documento antes de mudar o desenho. Ele guarda o **porquê**, que o
+> código sozinho não conta.
 
 ---
 
@@ -91,9 +125,10 @@ Cada push na `main` publica uma versão SemVer — veja os
 [releases](https://github.com/iporto/deploy/releases). O clone acima segue a
 `main`, isto é, **pega o estado mais recente sempre**.
 
-Sozinho isso é conveniente. Em equipe é fonte de "na minha máquina funciona":
-duas pessoas clonam com uma semana de diferença e rodam código diferente. Para
-um time, ou para um projeto que precisa reproduzir o ambiente mais tarde, fixe:
+> [!TIP]
+> Sozinho isso é conveniente. **Em equipe é fonte de "na minha máquina funciona"**:
+> duas pessoas clonam com uma semana de diferença e rodam código diferente. Para
+> um time, ou para um projeto que precisa reproduzir o ambiente mais tarde, fixe:
 
 ```bash
 git clone --branch v1.0.0 --depth 1 https://github.com/iporto/deploy.git ~/.deploy-scripts
@@ -117,7 +152,8 @@ symlinks relativos para um pequeno despachante versionado junto — assim o
 repositório do projeto continua funcionando na máquina de qualquer pessoa da
 equipe, sem caminho absoluto gravado.
 
-> ❌ **Não crie symlinks com `ln -s` apontando para esta pasta.** Era o modelo antigo:
+> [!WARNING]
+> **Não crie symlinks com `ln -s` apontando para esta pasta.** Era o modelo antigo:
 > o caminho absoluto da máquina de quem criou o projeto ficava gravado no git, e o
 > repositório nascia quebrado em qualquer outro computador. O shim resolve a
 > biblioteca em runtime — é ele que torna o projeto clonável.
@@ -162,10 +198,19 @@ para simular; `harden-vm` e `deploy-shim-install` **só simulam** até receberem
 
 ## Aviso
 
-Estes scripts foram escritos para um conjunto real de projetos e carregam as
-opiniões desse contexto. Estão publicados porque podem ser úteis a quem tem um
-problema parecido — não como produto. Leia antes de rodar em algo que te importa,
-especialmente o `harden-vm`, que mexe em firewall e SSH.
+> [!WARNING]
+> Estes scripts foram escritos para um conjunto real de projetos e carregam as
+> opiniões desse contexto. Estão publicados porque podem ser úteis a quem tem um
+> problema parecido — **não como produto**. Leia antes de rodar em algo que te
+> importa, especialmente o `harden-vm`, que mexe em firewall e SSH.
+
+---
+
+## Referência dos comandos
+
+Daqui para baixo é consulta, não leitura. Cada seção documenta um script: uso,
+comandos, flags, variáveis de ambiente e o que ele faz por dentro. Todos aceitam
+`--help`, que imprime um resumo do mesmo conteúdo.
 
 ---
 
@@ -556,7 +601,8 @@ script. Uma alteração ali mudaria o despachante, não o comando.
 Os arquivos de ambiente ficam versionados, porém cifrados. O `envedit` encapsula
 o `sops` com as flags corretas.
 
-> ⚠️ **Nunca use `sops` direto nestes arquivos.** Ele identifica o formato pela
+> [!CAUTION]
+> **Nunca use `sops` direto nestes arquivos.** Ele identifica o formato pela
 > extensão, e `.env.prd` não é uma que ele conheça: sem `--input-type dotenv` o
 > arquivo vira um blob binário e o `unencrypted_regex` é ignorado, quebrando a
 > leitura que o `deploy-sync` faz de `REMOTE_HOST`.
@@ -610,7 +656,8 @@ Roda **na VM**. Dry-run por padrão; exige `--apply` para valer.
 Configura ufw com política default-deny, escreve na chain `DOCKER-USER`, instala
 fail2ban e restringe o SSH a chave pública.
 
-> ⚠️ **`ufw` sozinho não bloqueia porta publicada pelo Docker** — ele escreve na
+> [!WARNING]
+> **`ufw` sozinho não bloqueia porta publicada pelo Docker** — ele escreve na
 > chain `FORWARD` antes do ufw. Por isso o script também mexe em `DOCKER-USER`, e
 > por isso o ideal é publicar em `127.0.0.1` no compose.
 
@@ -639,7 +686,8 @@ O que ele faz em cada projeto:
 | `deploy-readme.md` | Vira ponteiro real — não se executa um markdown |
 | `.rsyncignore` | Acrescenta `deploy-run` e `.deploy/`, se o arquivo existir |
 
-> ⚠️ O `deploy-run` precisa existir na VM e **não** pode viajar pelo rsync: com o
+> [!IMPORTANT]
+> O `deploy-run` precisa existir na VM e **não** pode viajar pelo rsync: com o
 > shim, o `-L` copiaria o próprio shim. Ele é entregue por `push_deploy_run()` no
 > `deploy-sync`. Por isso o instalador mexe no `.rsyncignore`.
 
@@ -674,7 +722,8 @@ vivem em cada repo de app, instalados pelo `deploy-app-scaffold`. Os dois script
 são as duas metades do mesmo desenho — este cuida do **dev**, aquele cuida do
 **build para produção**.
 
-> ⚠️ O ambiente gerado espera uma rede Docker externa chamada `shared`, com
+> [!NOTE]
+> O ambiente gerado espera uma rede Docker externa chamada `shared`, com
 > Traefik e os serviços de apoio (banco, cache, mail) já rodando nela. É a
 > topologia que estes scripts assumem; sem ela, ajuste o compose.
 
@@ -718,7 +767,8 @@ Detectado sozinho, ou forçado com `--type`:
 | `api` | sem `vite.config.*` | sem build de frontend |
 | `web` | `package.json` + `vite.config.*` | + `npm run build` |
 
-> ⚠️ O template assume a base `iporto99/php-8-3` — a mesma do dev, o que garante
+> [!NOTE]
+> O template assume a base `iporto99/php-8-3` — a mesma do dev, o que garante
 > paridade de runtime. É nela que se muda versão de PHP e extensões, não aqui.
 
 ---
@@ -845,3 +895,23 @@ esperando para subir?*
 
 A imagem sai do `docker-compose.<ambiente>.yml` e o repo de código de `code/*`.
 Não há registry, organização nem nome de projeto escritos no script.
+
+---
+
+## Documentação
+
+| | |
+|---|---|
+| [`DEPLOY-README.md`](DEPLOY-README.md) | **O modelo, não os comandos.** Os dois canais que não se misturam, os quatro verbos e o caminho que um segredo percorre. Leia antes de mexer no desenho do deploy. |
+| [`docs/development-environment.md`](docs/development-environment.md) | O registro das decisões: por que o `deploy-run dev` usa o contexto Docker e o `prd` não, e os doze defeitos que só apareceram rodando o fluxo numa máquina limpa. |
+| [Starter Kit](https://github.com/Codijo/starter-kit.spelt.com.br) | Um SaaS em Laravel que sobe com esta biblioteca — o consumidor de referência dela. Bom lugar para ver os scripts em uso real. |
+| `--help` | Todo script tem. É a referência mais curta e a que nunca fica desatualizada. |
+
+---
+
+## Licença
+
+[MIT](LICENSE). Use, modifique e distribua à vontade — inclusive comercialmente.
+
+Sem garantia: leia o [Aviso](#aviso) acima antes de apontar o `harden-vm` para
+uma máquina que te importa.
