@@ -79,8 +79,13 @@ case "$ctx_host" in
   ssh://*|tcp://*)    ctx_kind="${YELLOW}REMOTO${NC}" ;;
   *)                  ctx_kind="?" ;;
 esac
-echo -e "${BOLD}Contexto${NC}  ${ctx_name}  (${ctx_kind}) — ${ctx_host}"
-echo
+# ⚠️ Com --print-env a saída é DADO, não relatório: ela é redirecionada para um
+#    arquivo que o deploy-project-scaffold lê. Qualquer linha informativa aqui
+#    corromperia esse arquivo — por isso o cabeçalho é suprimido.
+if ! $PRINT_ENV; then
+  echo -e "${BOLD}Contexto${NC}  ${ctx_name}  (${ctx_kind}) — ${ctx_host}"
+  echo
+fi
 
 ENV_FILE="$DIR/.env.dev"
 _require_env() {
