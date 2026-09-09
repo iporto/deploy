@@ -75,28 +75,48 @@ EOF
 
 # Pré-processa flags antes de carregar o .env
 NO_PULL=false
+NO_SYNC=false
 POSITIONAL_ARGS=()
 
 for arg in "$@"; do
   case "$arg" in
     --help|-h)    show_usage; exit 0 ;;
     --no-pull|-P) NO_PULL=true ;;
+    --no-sync)    NO_SYNC=true ;;
     *)            POSITIONAL_ARGS+=("$arg") ;;
   esac
 done
 
 CMD="${POSITIONAL_ARGS[0]:-}"
 
-# ─── Modo remoto: chamado do Mac com um ambiente como primeiro argumento ──────
+# ─── O primeiro argumento como ambiente ──────────────────────────────────────
 #
-# Na VM: ./deploy-run env-app          → roda local, como sempre
-# No Mac: ./deploy-run prd env-app     → faz SSH e roda o deploy-run de lá
+#   ./deploy-run             na VM: roda local lendo o .env entregue pelo sync
+#   ./deploy-run dev         lê .env.dev e roda NO CONTEXTO DOCKER ATIVO
+#   ./deploy-run prd env-app faz SSH e roda o deploy-run de dentro da VM
 #
-# A distinção é o primeiro argumento ser um nome de ambiente. Assim o uso
-# antigo continua idêntico e o script ganha a mesma assinatura dos demais
-# (deploy prd, deploy-backup prd, deploy-promote prd).
+# ⚠️ `dev` e `prd` são deliberadamente diferentes.
+#
+#    dev usa o contexto: é o caso do desenvolvedor, que pode ter Docker local ou
+#    apontado para uma VM. O contexto já sabe o destino — SSH aqui seria redundante.
+#
+#    prd NÃO usa o contexto: produção tem um host definido no .env.prd, não "o
+#    contexto que por acaso está ativo". Sem isso, um `./deploy-run prd` com o
+#    contexto apontando para a VM de desenvolvimento subiria o compose de
+#    produção no lugar errado. O SSH aqui é proteção, não legado.
 case "$CMD" in
-  dev|prd|stg)
+  dev)
+    ENV_TARGET="dev"
+    ENV_FILE_LOCAL=".env.dev"
+    if [[ ! -f "$ENV_FILE_LOCAL" ]]; then
+      print_error "Arquivo .env.dev não encontrado — rode na raiz do projeto"
+      exit 1
+    fi
+    # Tira o "dev" da frente: o resto do script vê os argumentos como sempre.
+    POSITIONAL_ARGS=("${POSITIONAL_ARGS[@]:1}")
+    CMD="${POSITIONAL_ARGS[0]:-}"
+    ;;
+  prd|stg)
     ENV_TARGET="$CMD"
     REMAINING=("${POSITIONAL_ARGS[@]:1}")
     [[ "$NO_PULL" == true ]] && REMAINING+=("--no-pull")
@@ -109,7 +129,11 @@ case "$CMD" in
 
     # REMOTE_HOST e REMOTE_BASE_PATH ficam em texto puro mesmo no env cifrado
     # (unencrypted_regex), justamente para poderem ser lidos sem SOPS.
-    _read() { grep -E "^${1}=" "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"; }
+    # O `|| true` é essencial: sem ele o grep que não encontra a chave retorna 1,
+    # e o `set -e` mata o script DENTRO da substituição de comando — antes da
+    # validação logo abaixo. O sintoma era sair em silêncio, com exit 0, num
+    # .env.prd malformado. Falha silenciosa é pior que erro.
+    _read() { grep -E "^${1}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true; }
     REMOTE_HOST="$(_read REMOTE_HOST)"
     REMOTE_BASE_PATH="$(_read REMOTE_BASE_PATH)"
     BASTION_HOST="$(_read BASTION_HOST)"
@@ -158,14 +182,19 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
-# Carrega .env
-if [[ ! -f .env ]]; then
-  print_error "Arquivo .env não encontrado!"
+# Carrega o env do ambiente.
+#
+# `./deploy-run dev` lê .env.dev — é o arquivo local de cada desenvolvedor.
+# Sem argumento, lê .env: é como a VM roda a si mesma, com o arquivo que o
+# deploy-sync entregou decriptado.
+ENV_SOURCE="${ENV_FILE_LOCAL:-.env}"
+if [[ ! -f "$ENV_SOURCE" ]]; then
+  print_error "Arquivo ${ENV_SOURCE} não encontrado!"
   exit 1
 fi
 
 set -o allexport
-source .env
+source "$ENV_SOURCE"
 set +o allexport
 
 # ─── REMOTE_BASE_PATH é relativo ao DAEMON, não a esta máquina ────────────────
@@ -179,12 +208,46 @@ set +o allexport
 # sintoma aparece longe da causa.
 #
 # É isto que faz `./deploy-run dev` funcionar nos dois mundos sem configuração.
+DOCKER_IS_LOCAL=false
 case "$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" in
   unix://*|npipe://*)
+    DOCKER_IS_LOCAL=true
     REMOTE_BASE_PATH="$PWD"
     export REMOTE_BASE_PATH
     ;;
 esac
+
+# ─── Sync automático: só em dev, só com daemon remoto ────────────────────────
+#
+# Com daemon remoto, os bind mounts leem o filesystem da VM — e o compose, o
+# nginx e os envs deste projeto só chegam lá pelo deploy-sync. Mexer no compose
+# e esquecer de sincronizar deixa o container subindo com a configuração velha,
+# um sintoma que não aponta para a causa.
+#
+# É barato: o .rsyncignore exclui code/, então isto transfere só a configuração.
+# O código dos apps é problema do Mutagen, que é contínuo.
+#
+# ⚠️ prd e stg NÃO passam por aqui de propósito. `./deploy-run prd env-app` é
+#    "reinicie este serviço" — se sincronizasse, um comando de reinício passaria
+#    a publicar arquivos em produção, inclusive alterações em andamento. Quem
+#    quer os dois juntos usa `deploy prd`, que já encadeia sync → run.
+if [[ "${ENV_TARGET:-}" == "dev" && "$DOCKER_IS_LOCAL" == false && "$NO_SYNC" == false ]]; then
+  _sync_dir() {
+    local src="${BASH_SOURCE[0]}"
+    while [[ -L "$src" ]]; do
+      local d; d="$(cd -P "$(dirname "$src")" && pwd)"; src="$(readlink "$src")"
+      [[ "$src" != /* ]] && src="${d}/${src}"
+    done
+    cd -P "$(dirname "$src")" && pwd
+  }
+  _sync_bin="$(_sync_dir)/deploy-sync"
+  if [[ -x "$_sync_bin" ]]; then
+    print_info "Daemon remoto — sincronizando a configuração antes de subir (--no-sync pula)..."
+    "$_sync_bin" dev -r || { print_error "Falha ao sincronizar"; exit 1; }
+  else
+    print_warning "deploy-sync não encontrado ao lado — seguindo sem sincronizar."
+  fi
+fi
 
 # Valida variáveis obrigatórias
 if [[ -z "${APP_ENV:-}" || -z "${APP_PROJECT_NAME:-}" ]]; then

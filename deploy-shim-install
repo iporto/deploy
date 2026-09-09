@@ -13,7 +13,8 @@ set -uo pipefail
 #
 # Uso:  ./deploy-shim-install [DIRETORIO] [--apply]
 #       DIRETORIO pode ser a raiz dos projetos ou um projeto específico.
-#       --all-verbs cria também os verbos ausentes (projeto novo).
+#       --all-verbs        cria também os verbos ausentes (projeto novo).
+#       --verbs a,b,c      instala só esses verbos, em vez da lista completa.
 #       (padrão: $DEPLOY_PROJECTS_ROOT, ou o diretório atual)
 ################################################################################
 
@@ -26,11 +27,15 @@ BLUE=$'\033[0;34m'; BOLD=$'\033[1m'; NC=$'\033[0m'
 
 APPLY=false
 ALL_VERBS=false
+VERBS_OVERRIDE=""
 ROOT=""
+_next_is_verbs=false
 for arg in "$@"; do
+  if $_next_is_verbs; then VERBS_OVERRIDE="$arg"; _next_is_verbs=false; continue; fi
   case "$arg" in
     --apply) APPLY=true ;;
     --all-verbs) ALL_VERBS=true ;;
+    --verbs) _next_is_verbs=true ;;
     -*) echo "Opção desconhecida: $arg" >&2; exit 2 ;;
     *)  ROOT="$arg" ;;
   esac
@@ -55,6 +60,16 @@ TEMPLATE="${SCRIPTS_DIR}/template/shim"
 # é documentação, e não se executa um markdown.
 VERBS=(deploy deploy-audit deploy-backup deploy-promote deploy-run
        deploy-sync deploy-token-check envedit harden-vm deploy-shim-install)
+
+# --verbs restringe a lista. É o que a trilha Coolify usa: dos 10, só deploy-run
+# e deploy-sync têm função lá — os outros servem ao ciclo :prd + Watchtower.
+if [[ -n "$VERBS_OVERRIDE" ]]; then
+  IFS=',' read -r -a VERBS <<< "$VERBS_OVERRIDE"
+  for v in "${VERBS[@]}"; do
+    [[ -f "${SCRIPTS_DIR:-$(_scripts_dir)}/${v}" ]] || {
+      echo "${RED}Verbo desconhecido: ${v}${NC}" >&2; exit 2; }
+  done
+fi
 
 # Descobre os projetos: um diretório específico, ou a varredura da raiz.
 PROJECTS=()
