@@ -18,7 +18,7 @@ set -uo pipefail
 #   <dominio>        domínio de produção. ex.: meuprojeto.com
 #   --slug S         identificador curto      (padrão: 1º rótulo do domínio)
 #   --dev-domain D   domínio de dev           (padrão: <slug>.io)
-#   --ip IP          IP para o arquivo hosts  (padrão: 192.168.66.1)
+#   --ip IP          IP para o arquivo hosts  (padrão: 127.0.0.1 — Docker local)
 #   --apps LISTA     api,platform | api,platform,www   (padrão: api,platform)
 #   --dir DIR        onde criar               (padrão: ./deploy.<dominio>)
 #   --from-kit DIR   instancia os apps a partir de um checkout do kit
@@ -34,7 +34,9 @@ RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
 BLUE=$'\033[0;34m'; BOLD=$'\033[1m'; NC=$'\033[0m'
 
 DOMAIN="$1"; shift
-SLUG=""; DEVDOMAIN=""; DEVIP="192.168.66.1"; APPS="api,platform"; DIR=""; APPLY=false
+SLUG=""; DEVDOMAIN=""; # Docker local é o caso comum: o projeto responde no loopback. Quem roda o
+# daemon numa VM passa --ip com o endereço dela.
+DEVIP="127.0.0.1"; APPS="api,platform"; DIR=""; APPLY=false
 KIT=""; DB_ENV=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
