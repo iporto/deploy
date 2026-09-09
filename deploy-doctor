@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+################################################################################
+# deploy-doctor — verifica se esta máquina consegue rodar o ambiente
+#
+# Feito para rodar ANTES de tudo, logo depois de clonar a biblioteca. A ideia é
+# descobrir agora o que impediria o ambiente de subir, em vez de no meio do
+# caminho — com um sintoma que não aponta para a causa.
+#
+# Só LÊ. Não instala, não sobe, não altera nada.
+#
+# Uso:  ./deploy-doctor [DIRETORIO_DO_PROJETO]
+#       Sem argumento, verifica a máquina e a infra.
+#       Com um projeto, verifica também o que ele precisa.
+################################################################################
+
+case "${1:-}" in -h|--help) sed -n '5,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+
+RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m'; BOLD=$'\033[1m'; NC=$'\033[0m'
+BLOQUEIOS=0; AVISOS=0; DAEMON_REMOTO=false
+
+ok()    { printf '  %s✓%s %s\n' "$GREEN" "$NC" "$1"; }
+warn()  { printf '  %s!%s %s\n' "$YELLOW" "$NC" "$1"; [[ -n "${2:-}" ]] && printf '      %s\n' "$2"; AVISOS=$((AVISOS+1)); }
+fail()  { printf '  %s✗%s %s\n' "$RED" "$NC" "$1";   [[ -n "${2:-}" ]] && printf '      %s\n' "$2"; BLOQUEIOS=$((BLOQUEIOS+1)); }
+titulo(){ printf '\n%s%s%s\n' "$BOLD" "$1" "$NC"; }
+
+PROJ="${1:-}"
+
+titulo "Ferramentas"
+for t in docker git curl rsync; do
+  command -v "$t" >/dev/null 2>&1 && ok "$t" || fail "$t não encontrado" "instale antes de continuar"
+done
+if command -v openssl >/dev/null 2>&1; then ok "openssl"
+else warn "openssl não encontrado" "use: head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9'"; fi
+
+titulo "Docker"
+if ! docker info >/dev/null 2>&1; then
+  fail "o daemon não responde" "inicie o Docker e rode de novo"
+else
+  ctx="$(docker context show 2>/dev/null || echo default)"
+  host="$(docker context inspect "$ctx" --format '{{.Endpoints.docker.Host}}' 2>/dev/null)"
+  case "$host" in
+    unix://*|npipe://*) ok "contexto '${ctx}' — daemon LOCAL" ;;
+    ssh://*|tcp://*)
+      DAEMON_REMOTO=true
+      warn "contexto '${ctx}' — daemon REMOTO (${host})" \
+           "os containers sobem lá, não aqui. Para rodar local: docker context use default" ;;
+    *) warn "contexto '${ctx}' — endpoint desconhecido" ;;
+  esac
+  if docker compose version >/dev/null 2>&1; then ok "docker compose v2"
+  elif command -v docker-compose >/dev/null 2>&1; then warn "só docker-compose v1" "o v2 é recomendado"
+  else fail "docker compose não encontrado" "instale o plugin compose"; fi
+
+  # ⚠️ Foi o bug mais difícil de diagnosticar: o Traefik falava a API v1.24 e o
+  #    Docker 29 exige 1.44+. Nenhuma rota era descoberta e tudo dava 404, sem
+  #    erro visível. A infra já contorna com um proxy, mas se a versão mínima
+  #    subir de novo, é aqui que se vê.
+  minapi="$(docker version --format '{{.Server.MinAPIVersion}}' 2>/dev/null)"
+  [[ -n "$minapi" ]] && ok "API mínima do daemon: ${minapi} (a infra usa proxy de compatibilidade)"
+
+  arch="$(docker info --format '{{.Architecture}}' 2>/dev/null)"
+  case "$arch" in
+    aarch64|arm64) warn "arquitetura ${arch}" "as imagens de terceiros rodam emuladas — mais lentas, porém estáveis" ;;
+    *) ok "arquitetura ${arch}" ;;
+  esac
+fi
+
+titulo "Recursos"
+# ⚠️ Disco e portas são medidos NESTA máquina. Com daemon remoto, quem precisa
+#    do espaço e das portas é o outro lado — e o doctor não o alcança.
+if $DAEMON_REMOTO; then
+  warn "disco e portas medidos nesta máquina" \
+       "com daemon remoto, quem precisa deles é ${host} — rode o doctor lá também"
+fi
+# Disco: medimos ~11 GB em uso com tudo no ar. 20 GB é o piso honesto.
+disco_kb="$(df -Pk "${PROJ:-$PWD}" 2>/dev/null | awk 'NR==2{print $4}')"
+if [[ -n "$disco_kb" ]]; then
+  disco_gb=$(( disco_kb / 1024 / 1024 ))
+  if   [[ $disco_gb -ge 20 ]]; then ok "disco livre: ${disco_gb} GB"
+  elif [[ $disco_gb -ge 12 ]]; then warn "disco livre: ${disco_gb} GB" "o ambiente usa ~11 GB; vai ficar apertado"
+  else fail "disco livre: ${disco_gb} GB" "o ambiente usa ~11 GB — libere espaço ou aumente o disco"; fi
+fi
+if [[ "$(uname -s)" == "Linux" ]]; then
+  ram_mb=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1024 ))
+  if   [[ $ram_mb -ge 3500 ]]; then ok "RAM: $(( ram_mb / 1024 )) GB"
+  elif [[ $ram_mb -gt 0 ]];    then warn "RAM: $(( ram_mb / 1024 )) GB" "o ambiente usa ~1 GB, mas o composer/npm pedem mais no primeiro build"; fi
+fi
+
+titulo "Portas nesta máquina"
+# Só faz sentido checar se o daemon é local: com daemon remoto as portas são de lá.
+_porta_livre() {
+  if command -v ss >/dev/null 2>&1; then ! ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"
+  elif command -v lsof >/dev/null 2>&1; then ! lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+  else return 0; fi
+}
+for p in 80:Traefik 3306:MySQL 6379:Redis 1025:SMTP 8025:Mailpit 8080:dashboard; do
+  porta="${p%%:*}"; quem="${p#*:}"
+  if _porta_livre "$porta"; then ok "${porta} livre (${quem})"
+  else
+    if docker ps --format '{{.Ports}}' 2>/dev/null | grep -q ":${porta}->"; then
+      ok "${porta} em uso por um container do próprio ambiente"
+    else
+      warn "${porta} ocupada (${quem})" "troque em infra/.env.dev, ou libere a porta"
+    fi
+  fi
+done
+
+titulo "Infra compartilhada"
+if docker network inspect shared >/dev/null 2>&1; then ok "rede 'shared' existe"
+else warn "rede 'shared' não existe" "normal antes do primeiro uso — rode: deploy-infra up"; fi
+for c in infra-traefik infra-mysql infra-redis infra-mail; do
+  st="$(docker inspect --format '{{.State.Status}}' "$c" 2>/dev/null)"
+  if [[ "$st" == "running" ]]; then
+    h="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}sem healthcheck{{end}}' "$c" 2>/dev/null)"
+    [[ "$h" == "unhealthy" ]] && warn "${c}: ${h}" "veja: deploy-infra logs" || ok "${c}: ${h}"
+  elif [[ -n "$st" ]]; then warn "${c}: ${st}" "rode: deploy-infra up"
+  else warn "${c} não existe" "rode: deploy-infra up"; fi
+done
+
+# ⚠️ Um .env.dev com as senhas em branco passa despercebido: o compose falha na
+#    interpolação com uma mensagem que não diz qual arquivo preencher.
+_dir_lib() {
+  local src="${BASH_SOURCE[0]}"
+  while [[ -L "$src" ]]; do local d; d="$(cd -P "$(dirname "$src")" && pwd)"; src="$(readlink "$src")"; [[ "$src" != /* ]] && src="${d}/${src}"; done
+  cd -P "$(dirname "$src")" && pwd
+}
+INFRA_ENV="$(_dir_lib)/infra/.env.dev"
+if [[ -f "$INFRA_ENV" ]]; then
+  faltando=""
+  for k in MYSQL_ROOT_PASSWORD REDIS_PASSWORD; do
+    v="$(grep -E "^${k}=" "$INFRA_ENV" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
+    [[ -z "$v" ]] && faltando="${faltando} ${k}"
+  done
+  [[ -z "$faltando" ]] && ok "infra/.env.dev preenchido" \
+    || fail "infra/.env.dev com senha em branco:${faltando}" "gere com: openssl rand -hex 24"
+else
+  warn "infra/.env.dev ainda não existe" "criado no primeiro: deploy-infra up"
+fi
+
+# ─── Verificações do projeto ─────────────────────────────────────────────────
+if [[ -n "$PROJ" ]]; then
+  titulo "Projeto: $(basename "$PROJ")"
+  [[ -f "$PROJ/.env.dev" ]] && ok ".env.dev presente" || fail ".env.dev ausente" "rode o deploy-project-scaffold"
+  [[ -f "$PROJ/docker-compose.dev.yml" ]] && ok "docker-compose.dev.yml presente" || fail "compose de dev ausente"
+
+  if [[ -f "$PROJ/hosts" ]]; then
+    pend=""
+    while read -r ip nomes; do
+      [[ "$ip" =~ ^# || -z "${nomes:-}" ]] && continue
+      for n in $nomes; do
+        getent hosts "$n" >/dev/null 2>&1 || grep -qE "[[:space:]]${n}([[:space:]]|$)" /etc/hosts 2>/dev/null || pend="${pend} ${n}"
+      done
+    done < "$PROJ/hosts"
+    # ⚠️ Sem a entrada o navegador NÃO erra: .test não resolve e ele tenta uma
+    #    busca. É o sintoma que menos aponta para a causa em todo o fluxo.
+    [[ -z "$pend" ]] && ok "domínios resolvem" \
+      || fail "domínios sem entrada no /etc/hosts:${pend}" \
+              "sem isso o navegador não dá erro — ele vai para a internet. Rode: sudo sh -c 'cat ${PROJ}/hosts >> /etc/hosts'"
+  fi
+
+  for app in "$PROJ"/code/*/; do
+    [[ -d "$app" ]] || continue
+    nome="$(basename "$app")"
+    if [[ -f "$app/.env.example" ]]; then
+      dbh="$(grep -E '^DB_HOST=' "$app/.env.example" | head -1 | cut -d= -f2- | tr -d '"' || true)"
+      [[ "$dbh" == "127.0.0.1" || "$dbh" == "localhost" ]] \
+        && fail "${nome}: DB_HOST=${dbh}" "dentro do container isso é o próprio container — deveria ser infra-mysql" \
+        || ok "${nome}: DB_HOST=${dbh:-<vazio>}"
+    fi
+  done
+fi
+
+echo
+if   [[ $BLOQUEIOS -gt 0 ]]; then printf '%s%d bloqueio(s)%s e %d aviso(s). Resolva os bloqueios antes de seguir.\n' "$RED$BOLD" "$BLOQUEIOS" "$NC" "$AVISOS"; exit 1
+elif [[ $AVISOS -gt 0 ]];    then printf '%sPronto para rodar%s, com %d aviso(s) — leia antes de seguir.\n' "$YELLOW$BOLD" "$NC" "$AVISOS"; exit 0
+else printf '%sTudo pronto.%s\n' "$GREEN$BOLD" "$NC"; exit 0; fi
