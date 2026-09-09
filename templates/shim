@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+#
+# Shim de bootstrap dos scripts de deploy.
+#
+# Os scripts (deploy, deploy-sync, deploy-run, …) NÃO vivem neste projeto. Eles
+# são uma biblioteca compartilhada por todos os repositórios deploy.*, publicada
+# em git@github.com:iporto/deploy.git.
+#
+# Cada verbo na raiz do projeto é um symlink RELATIVO para este arquivo, e o nome
+# pelo qual o shim foi invocado é o que decide qual script executar.
+#
+# Por que existe: antes, cada verbo era um symlink com o caminho ABSOLUTO da
+# máquina de quem criou o projeto. Ao clonar o repo em qualquer outro computador
+# os dez nasciam quebrados. O shim troca um caminho fixo por uma busca em runtime.
+#
+set -euo pipefail
+
+CMD="$(basename "$0")"
+
+if [[ "$CMD" == "shim" ]]; then
+  echo "shim: não execute este arquivo diretamente." >&2
+  echo "Ele é despachado pelos verbos do projeto: ./deploy, ./deploy-sync, …" >&2
+  exit 64
+fi
+
+# Ordem de resolução: do mais explícito ao mais convencional.
+_candidates=(
+  "${DEPLOY_SCRIPTS_HOME:-}"
+  "${HOME}/.deploy-scripts"
+  "${HOME}/Environment/Dev/Deploy-Scripts"
+)
+
+for _dir in "${_candidates[@]}"; do
+  [[ -n "$_dir" && -x "${_dir}/${CMD}" ]] || continue
+  exec "${_dir}/${CMD}" "$@"
+done
+
+# Nada encontrado. Falhar com instrução — nunca em silêncio.
+{
+  echo "[ERRO] Scripts de deploy compartilhados não encontrados."
+  echo
+  echo "  Comando pedido: ${CMD}"
+  echo "  Procurei em:"
+  for _dir in "${_candidates[@]}"; do
+    [[ -n "$_dir" ]] && echo "    - ${_dir}"
+  done
+  echo
+  echo "  Instale a biblioteca uma vez:"
+  echo "      git clone git@github.com:iporto/deploy.git ~/.deploy-scripts"
+  echo
+  echo "  Ou aponte para um clone que já exista:"
+  echo "      export DEPLOY_SCRIPTS_HOME=/caminho/do/clone"
+  echo
+} >&2
+exit 127

@@ -398,15 +398,18 @@ REMOTE_BASE_PATH/backups/
 
 ## Como adicionar um novo projeto
 
-Dentro do diretório do novo projeto, execute o bloco abaixo para criar todos os symlinks de uma vez:
+Dentro do diretório do novo projeto:
 
 ```bash
-SCRIPTS="${DEPLOY_SCRIPTS_HOME:-$HOME/.deploy-scripts}"
-ln -sf "$SCRIPTS/deploy"         deploy
-ln -sf "$SCRIPTS/deploy-backup"  deploy-backup
-ln -sf "$SCRIPTS/deploy-run"     deploy-run
-ln -sf "$SCRIPTS/deploy-sync"    deploy-sync
+deploy-shim-install . --apply
 ```
+
+Isso instala o `.deploy/bin/shim` e cria os symlinks relativos de todos os verbos.
+
+> ❌ **Não crie symlinks com `ln -s` apontando para esta pasta.** Era o modelo antigo:
+> o caminho absoluto da máquina de quem criou o projeto ficava gravado no git, e o
+> repositório nascia quebrado em qualquer outro computador. O shim resolve a
+> biblioteca em runtime — é ele que torna o projeto clonável.
 
 Depois crie o arquivo de conexão do ambiente:
 
@@ -499,6 +502,32 @@ fail2ban e restringe o SSH a chave pública.
 
 Tem guarda anti-lockout: não desliga a senha do SSH se não houver chave
 autorizada instalada.
+
+---
+
+## `deploy-shim-install` — Instala o shim de bootstrap
+
+Converte projetos `deploy.*` do modelo antigo (symlink com caminho absoluto) para
+o shim. Idempotente e dry-run por padrão.
+
+```bash
+./deploy-shim-install                    # dry-run em $DEPLOY_PROJECTS_ROOT
+./deploy-shim-install ~/Projetos --apply # converte tudo que encontrar
+./deploy-shim-install . --apply          # só o projeto atual
+```
+
+O que ele faz em cada projeto:
+
+| Ação | Detalhe |
+|---|---|
+| Instala `.deploy/bin/shim` | Cópia de `templates/shim`, versionada no projeto |
+| Converte os verbos | Symlink absoluto → symlink **relativo** para o shim |
+| `deploy-readme.md` | Vira ponteiro real — não se executa um markdown |
+| `.rsyncignore` | Acrescenta `deploy-run` e `.deploy/`, se o arquivo existir |
+
+> ⚠️ O `deploy-run` precisa existir na VM e **não** pode viajar pelo rsync: com o
+> shim, o `-L` copiaria o próprio shim. Ele é entregue por `push_deploy_run()` no
+> `deploy-sync`. Por isso o instalador mexe no `.rsyncignore`.
 
 ---
 
