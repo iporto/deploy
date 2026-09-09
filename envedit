@@ -260,6 +260,23 @@ if [[ ! -f "$file" ]]; then
   exit 1
 fi
 
+# ─── Arquivo em texto puro ───────────────────────────────────────────────────
+#
+# Desde que os envs de desenvolvimento deixaram de ser criptografados, chamar o
+# envedit num arquivo não cifrado virou engano comum. O sops responde
+# "sops metadata not found", que não diz o que fazer. Aqui a resposta é útil.
+if ! grep -q 'ENC\[\|sops_version' "$file" 2>/dev/null; then
+  if [[ "$SHOW" == true ]]; then
+    cat "$file"
+    exit 0
+  fi
+  print_warning "${file} não está criptografado — o envedit não tem o que fazer aqui."
+  print_info "Envs de desenvolvimento são texto puro por decisão de projeto:"
+  print_info "  o template versionado é o .env.dev.example; o .env.dev é local e gitignored."
+  print_info "Edite direto:  \${EDITOR:-code} ${file}"
+  exit 0
+fi
+
 if [[ "$SHOW" == true ]]; then
   exec sops -d "${SOPS_FLAGS[@]}" "$file"
 fi
