@@ -83,7 +83,30 @@ else
     find "$ROOT" -maxdepth 2 -type d -name 'deploy.*' 2>/dev/null | sort
   )
 fi
-[[ ${#PROJECTS[@]} -gt 0 ]] || { echo "Nenhum projeto deploy.* encontrado em ${ROOT}"; exit 1; }
+# ⚠️ A mensagem antiga era "Nenhum projeto deploy.* encontrado" — dita a quem
+#    estava PARADO DENTRO de um deploy.xyz.com. Ela descrevia o segundo modo de
+#    uso (varrer filhos) para quem tentava o primeiro (equipar este diretório), e
+#    mandava procurar o erro no lugar errado. Agora diz o que faltou e o que
+#    fazer nos dois casos.
+if [[ ${#PROJECTS[@]} -eq 0 ]]; then
+  {
+    # `${ROOT}.` com ROOT="." imprimia "em ..". Mostrar o caminho resolvido
+    # também evita a dúvida de qual diretório o comando olhou.
+    echo "${RED}Nada para instalar em: $(cd "$ROOT" 2>/dev/null && pwd || echo "$ROOT")${NC}"
+    echo
+    echo "Este diretório não parece um projeto de deploy — não encontrei nenhum destes:"
+    echo "  docker-compose.dev.yml · docker-compose.prd.yml · .env.dev · .env.prd · .deploy/"
+    echo "E também não há subdiretório deploy.* aqui para instalar em lote."
+    echo
+    echo "${BOLD}Se o projeto ainda não existe${NC} — crie a estrutura primeiro:"
+    echo "    deploy-project-scaffold <dominio> --dir . --apply"
+    echo "  Gera compose, nginx, envs e hosts, e já instala os verbos."
+    echo
+    echo "${BOLD}Se você já tem o seu próprio docker-compose${NC} — o shim se ancora nele."
+    echo "  Nomeie-o docker-compose.dev.yml (ou .prd.yml) e rode este comando de novo."
+  } >&2
+  exit 1
+fi
 
 $APPLY || echo "${YELLOW}${BOLD}DRY-RUN${NC} — nada será escrito. Use --apply para valer.${NC}"
 echo
