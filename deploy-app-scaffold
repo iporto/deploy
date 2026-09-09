@@ -112,6 +112,11 @@ done
 
 echo
 echo "${BOLD}Apps: ${TOT}${NC}  •  em dia: ${OK}  •  com arquivo faltando: ${NEW}  •  divergentes: ${DRIFT}"
+if $APPLY && [[ $NEW -gt 0 ]]; then
+  echo
+  echo "${BOLD}Próximo passo${NC} — a imagem já pode ser buildada pelo próprio repo do app."
+  echo "  Commite os artefatos e configure o auto-deploy: veja docs/coolify-deploy.md"
+fi
 if ! $APPLY; then
   hint=""; [[ $DRIFT -gt 0 ]] && hint=" (e --force para atualizar os divergentes)"
   echo "${YELLOW}Rode com --apply para escrever${hint}.${NC}"

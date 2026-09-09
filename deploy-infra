@@ -110,6 +110,9 @@ case "$CMD" in
     mail_port=$(grep -E '^MAILPIT_WEB_PORT=' "$ENV_FILE" | cut -d= -f2); mail_port="${mail_port:-8025}"
     print_info "Traefik:  http://127.0.0.1:${src_port}   (dashboard, só loopback)"
     print_info "Mailpit:  http://127.0.0.1:${mail_port}"
+    echo
+    echo "${BOLD}Próximo passo${NC} — criar o banco do seu produto:"
+    echo "  deploy-infra createdb <nome> --print-env > /tmp/<nome>-db.env"
     ;;
   down)
     print_info "Derrubando (os volumes ficam)..."

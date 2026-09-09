@@ -233,7 +233,7 @@ if $APPLY; then
   sed "s/^/       /" "${DIR}/hosts" 2>/dev/null | grep -v '^\s*#' | grep -v '^\s*$'
   echo "  ${n}. subir:            cd ${DIR} && ./deploy-run dev"; n=$((n+1))
   echo "  ${n}. migrar:           docker compose exec php-api php artisan migrate"; n=$((n+1))
-  echo "  ${n}. entrar sem Spelt: gere um token e acesse"
+  echo "  ${n}. entrar sem o SSO: gere um token de dev e acesse"
   echo "     http://platform.${DEVDOMAIN}/auth/dev-login?token=SEU_TOKEN"
   echo
   echo "  Depois disso: duplique docs/TEMPLATE.md e desenhe o produto."

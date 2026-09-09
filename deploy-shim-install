@@ -191,5 +191,10 @@ done
 
 echo
 echo "${BOLD}Projetos: ${TOTAL}${NC}  •  a converter/convertidos: ${CONVERTED}  •  já ok: ${SKIPPED}  •  falhas: ${FAILED}"
+if $APPLY && [[ $CONVERTED -gt 0 ]]; then
+  echo
+  echo "${BOLD}Próximo passo${NC} — commite os verbos e o .deploy/bin/shim."
+  echo "  São eles que fazem o repositório funcionar na máquina de outra pessoa."
+fi
 $APPLY || echo "${YELLOW}Rode de novo com --apply para escrever.${NC}"
 [[ $FAILED -eq 0 ]]
