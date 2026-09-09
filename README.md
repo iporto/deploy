@@ -1,20 +1,50 @@
-# Scripts de Deploy — Canônico Centralizado
+# deploy
 
-> 📖 **Este arquivo é a referência de comandos e flags.** Para entender *como o
-> sistema funciona* — os dois canais, os três verbos, por onde um segredo viaja —
-> leia o `DEPLOY-README.md` ao lado (symlink `deploy-readme.md` nos projetos).
+Scripts de shell para publicar projetos **Docker Compose** numa VM por SSH e rsync.
+Sem agente no servidor, sem painel, sem plataforma: um punhado de scripts que você
+lê em uma tarde e um `.env` por ambiente.
 
-
-Scripts de deploy compartilhados entre todos os projetos `deploy.*`.
-Cada projeto contém um symlink apontando para estes arquivos; qualquer alteração feita aqui propaga automaticamente para todos.
-
+```bash
+./deploy prd          # sincroniza o projeto com o servidor e sobe os containers
+./deploy-backup prd   # traz um dump dos bancos do servidor
+./envedit prd         # edita o .env criptografado em texto puro
 ```
-deploy-scripts/
-├── deploy         ← orquestra deploy para múltiplos servidores (via servers.yml)
-├── deploy-backup  ← cria backups dos containers do projeto
-├── deploy-run     ← gerencia containers Docker no servidor
-└── deploy-sync    ← sincroniza arquivos locais com o servidor remoto
-```
+
+---
+
+## O problema que ele resolve
+
+Um projeto Docker Compose pequeno demais para Kubernetes, mas grande demais para
+`scp` e `docker compose up` na unha. Você precisa de coisas chatas e repetitivas:
+mandar os arquivos sem sobrescrever o que vive só no servidor, entregar segredos
+sem versioná-los em texto puro, subir os containers na ordem certa, tirar backup
+antes de mexer, e não deixar o banco exposto na internet.
+
+Este repositório é esse conjunto de tarefas, cada uma num script com uma
+responsabilidade só, compartilhado por vários projetos ao mesmo tempo.
+
+**Duas ideias sustentam o desenho:**
+
+1. **Imagem e configuração viajam por caminhos separados.** O CI constrói e publica
+   a imagem; o `deploy` entrega compose, configs e envs. Um nunca depende do outro.
+2. **O servidor puxa, ninguém empurra.** A VM não precisa aceitar conexão do CI —
+   o Watchtower observa o registry. Menos superfície exposta.
+
+O `DEPLOY-README.md` explica esse modelo em detalhe. Este arquivo é a referência
+de comandos e flags.
+
+---
+
+## Isto serve para você?
+
+Ele assume um cenário específico. Se algum item não bate, provavelmente não serve:
+
+| Premissa | |
+|---|---|
+| Aplicação em **Docker Compose** | não Kubernetes, não Swarm |
+| Uma ou mais **VMs Linux** com acesso SSH | não PaaS |
+| Estação de trabalho **macOS ou Linux** | os scripts rodam no seu computador |
+| Configuração por **arquivo `.env` por ambiente** | `dev`, `stg`, `prd` |
 
 ---
 
@@ -27,6 +57,79 @@ deploy-scripts/
 | `rsync` | Transferência de arquivos | `brew install rsync` |
 | `ssh` | Acesso remoto | Incluso no macOS |
 | `envsubst` | Substituição de variáveis | `brew install gettext` |
+
+---
+
+## Instalação
+
+```bash
+git clone https://github.com/iporto/deploy.git ~/.deploy-scripts
+```
+
+É só isso — são scripts de shell, não há build. Para instalar em outro caminho,
+aponte a variável:
+
+```bash
+export DEPLOY_SCRIPTS_HOME=/onde/você/clonou
+```
+
+Depois, dentro do seu projeto:
+
+```bash
+~/.deploy-scripts/deploy-shim-install . --apply
+```
+
+Isso cria os verbos (`./deploy`, `./deploy-sync`, …) na raiz do projeto como
+symlinks relativos para um pequeno despachante versionado junto — assim o
+repositório do projeto continua funcionando na máquina de qualquer pessoa da
+equipe, sem caminho absoluto gravado.
+
+> ❌ **Não crie symlinks com `ln -s` apontando para esta pasta.** Era o modelo antigo:
+> o caminho absoluto da máquina de quem criou o projeto ficava gravado no git, e o
+> repositório nascia quebrado em qualquer outro computador. O shim resolve a
+> biblioteca em runtime — é ele que torna o projeto clonável.
+
+Depois crie o arquivo de conexão do ambiente:
+
+```bash
+cat > .env.prd << EOF
+REMOTE_HOST=deploy@ip-do-servidor
+REMOTE_BASE_PATH=/home/deploy/meu-projeto
+BASTION_HOST=          # opcional
+SYNC_POST_RUN=true     # executa ./deploy-run no servidor após sync
+EOF
+```
+
+---
+
+## Os scripts
+
+| Script | O que faz |
+|---|---|
+| `deploy` | Orquestra o deploy para todas as VMs do ambiente, lendo `servers.yml` |
+| `deploy-sync` | Envia o projeto por rsync, entrega os envs decriptados e dispara o `deploy-run` |
+| `deploy-run` | Sobe, para e reconstrói os containers — roda no seu Mac ou na VM |
+| `deploy-promote` | Promove uma imagem já construída para produção, com rollback por SHA |
+| `deploy-backup` | Baixa backup dos bancos do servidor, com retenção |
+| `envedit` | Edita envs criptografados com SOPS + age, encapsulando as flags que o formato exige |
+| `harden-vm` | Fecha a superfície de rede da VM: ufw, `DOCKER-USER`, fail2ban, SSH por chave |
+| `deploy-audit` | Varre vários projetos procurando env em texto puro, porta exposta, `chmod 777` |
+| `deploy-token-check` | Diagnostica o token de acesso ao registry |
+| `deploy-shim-install` | Instala os verbos num projeto (acima) |
+| `init-mutagen` | Sobe e diagnostica a sessão do Mutagen, para desenvolvimento com VM remota |
+
+Todo script tem `--help`. `deploy`, `deploy-sync` e `deploy-backup` aceitam `-n`
+para simular; `harden-vm` e `deploy-shim-install` **só simulam** até receberem
+`--apply`.
+
+---
+
+## Aviso
+
+Estes scripts foram escritos para um conjunto real de projetos e carregam as
+opiniões desse contexto. Estão publicados porque podem ser úteis a quem tem um
+problema parecido — não como produto. Leia antes de rodar em algo que te importa,
+especialmente o `harden-vm`, que mexe em firewall e SSH.
 
 ---
 
@@ -396,32 +499,6 @@ REMOTE_BASE_PATH/backups/
 
 ---
 
-## Como adicionar um novo projeto
-
-Dentro do diretório do novo projeto:
-
-```bash
-deploy-shim-install . --apply
-```
-
-Isso instala o `.deploy/bin/shim` e cria os symlinks relativos de todos os verbos.
-
-> ❌ **Não crie symlinks com `ln -s` apontando para esta pasta.** Era o modelo antigo:
-> o caminho absoluto da máquina de quem criou o projeto ficava gravado no git, e o
-> repositório nascia quebrado em qualquer outro computador. O shim resolve a
-> biblioteca em runtime — é ele que torna o projeto clonável.
-
-Depois crie o arquivo de conexão do ambiente:
-
-```bash
-cat > .env.prd << EOF
-REMOTE_HOST=deploy@ip-do-servidor
-REMOTE_BASE_PATH=/home/deploy/meu-projeto
-BASTION_HOST=          # opcional
-SYNC_POST_RUN=true     # executa ./deploy-run no servidor após sync
-EOF
-```
-
 ## Como atualizar os scripts
 
 Edite apenas os arquivos canônicos — a mudança propaga para todos os projetos automaticamente:
@@ -433,7 +510,8 @@ code "$DEPLOY_SCRIPTS_HOME/deploy-run"
 code "$DEPLOY_SCRIPTS_HOME/deploy-backup"
 ```
 
-Não edite os arquivos dentro dos projetos — eles são symlinks e a alteração seria sobrescrita.
+Não edite os verbos dentro de um projeto: eles apontam para o shim, não para o
+script. Uma alteração ali mudaria o despachante, não o comando.
 
 ---
 
