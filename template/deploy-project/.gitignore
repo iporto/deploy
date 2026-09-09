@@ -1,0 +1,41 @@
+#Terraform
+**/.terraform.lock.hcl
+**/.terraform
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/.terraformrc
+
+# Padrão
+.DS_Store
+**/data/*
+/code/*
+
+# ─── Ambiente ────────────────────────────────────────────────────────────────
+# Os arquivos .env.prd / .env.dev / .envs/*.env.prd SÃO versionados, porém
+# CRIPTOGRAFADOS com SOPS (ver .sops.yaml e docs/secrets-management.md).
+# O que nunca pode ser versionado é texto puro:
+.env
+**/.env
+.envs/*.env
+!.envs/*.env.prd
+!.envs/*.env.dev
+!.envs/*.env.stg
+*.env.decrypted
+*.env.plain
+
+# Especial para o site da Aliança
+**/_cache/*
+**/_files/*
+.docker/Watchtower/config.json
+
+# Kamal
+.kamal/secrets
+
+# ─── Backups ─────────────────────────────────────────────────────────────────
+# A barra final ignora o DIRETÓRIO inteiro, não só o conteúdo: pega backups/,
+# backups-legacy/, backup-2026/ e qualquer aninhamento dentro deles.
+**/backup*/
+
+# Env de desenvolvimento: valores reais, locais de cada dev.
+# O template versionado é o .env.dev.example — copie e preencha.
+.env.dev

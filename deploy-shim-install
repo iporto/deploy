@@ -13,21 +13,24 @@ set -uo pipefail
 #
 # Uso:  ./deploy-shim-install [DIRETORIO] [--apply]
 #       DIRETORIO pode ser a raiz dos projetos ou um projeto específico.
+#       --all-verbs cria também os verbos ausentes (projeto novo).
 #       (padrão: $DEPLOY_PROJECTS_ROOT, ou o diretório atual)
 ################################################################################
 
 case "${1:-}" in
-  -h|--help) sed -n '5,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '5,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
 BLUE=$'\033[0;34m'; BOLD=$'\033[1m'; NC=$'\033[0m'
 
 APPLY=false
+ALL_VERBS=false
 ROOT=""
 for arg in "$@"; do
   case "$arg" in
     --apply) APPLY=true ;;
+    --all-verbs) ALL_VERBS=true ;;
     -*) echo "Opção desconhecida: $arg" >&2; exit 2 ;;
     *)  ROOT="$arg" ;;
   esac
@@ -55,7 +58,10 @@ VERBS=(deploy deploy-audit deploy-backup deploy-promote deploy-run
 
 # Descobre os projetos: um diretório específico, ou a varredura da raiz.
 PROJECTS=()
-if [[ -e "${ROOT}/docker-compose.prd.yml" || -e "${ROOT}/.env.prd" || -e "${ROOT}/.deploy" ]]; then
+# Reconhece os dois modelos: o aparato antigo (.env.prd/compose de produção) e a
+# trilha Coolify, que só tem ambiente de dev — produção é o runbook do Coolify.
+if [[ -e "${ROOT}/docker-compose.prd.yml" || -e "${ROOT}/.env.prd" || -e "${ROOT}/.deploy" \
+   || -e "${ROOT}/docker-compose.dev.yml" || -e "${ROOT}/.env.dev" ]]; then
   PROJECTS=("$ROOT")
 else
   while IFS= read -r d; do PROJECTS+=("$d"); done < <(
@@ -79,16 +85,22 @@ for proj in "${PROJECTS[@]}"; do
   [[ -f "${proj}/.deploy/bin/shim" ]] && \
     { cmp -s "$TEMPLATE" "${proj}/.deploy/bin/shim" || need_shim=true; } || need_shim=true
 
+  # Converte o que já existe. Com --all-verbs, CRIA também os que faltam — é o
+  # caso de projeto novo, onde não há symlink algum para converter.
   to_convert=()
   for v in "${VERBS[@]}"; do
-    [[ -L "${proj}/${v}" ]] || continue
-    tgt="$(readlink "${proj}/${v}")"
-    [[ "$tgt" == ".deploy/bin/shim" ]] && continue
-    to_convert+=("$v")
+    if [[ -L "${proj}/${v}" ]]; then
+      tgt="$(readlink "${proj}/${v}")"
+      [[ "$tgt" == ".deploy/bin/shim" ]] && continue
+      to_convert+=("$v")
+    elif $ALL_VERBS && [[ ! -e "${proj}/${v}" && "$v" != "deploy-shim-install" ]]; then
+      to_convert+=("$v")
+    fi
   done
 
   readme_pending=false
   [[ -L "${proj}/deploy-readme.md" ]] && readme_pending=true
+  $ALL_VERBS && [[ ! -e "${proj}/deploy-readme.md" ]] && readme_pending=true
 
   rsync_pending=()
   if [[ -f "${proj}/.rsyncignore" ]]; then

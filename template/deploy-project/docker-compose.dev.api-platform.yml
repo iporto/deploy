@@ -1,0 +1,156 @@
+services:
+  nginx:
+    platform: linux/amd64
+    image: iporto99/nginx:latest
+    container_name: ${APP_PROJECT_NAME}-nginx
+    profiles:
+      - "development"
+    environment:
+      - PUID=${APP_UID}
+      - PGID=${APP_GID}
+      - ALLOW_OVERRIDE=true
+      - TZ=UTC
+    working_dir: /var/www/html
+    # O Traefik vai rotear o tráfego internamente via rede Docker.
+    volumes:
+      - ${REMOTE_BASE_PATH}/code/api.__DOMAIN__:/var/www/html/api.__DOMAIN__:rw
+      - ${REMOTE_BASE_PATH}/code/platform.__DOMAIN__:/var/www/html/platform.__DOMAIN__:rw      
+      # Configurações do Nginx
+      - ${REMOTE_BASE_PATH}/.docker/Nginx/conf/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${REMOTE_BASE_PATH}/.docker/Nginx/conf/sites-enabled:/etc/nginx/sites-enabled:ro
+    networks:
+      shared:
+        # Resolve os hosts públicos DENTRO da rede (container→container). Assim o platform
+        # troca o SSO em http://api.__DEVDOMAIN__/... sem host interno nem header Host manual —
+        # o nginx roteia por server_name. São hosts do PRÓPRIO projeto: não colidem com outros.
+        aliases:
+          - api.__DEVDOMAIN__
+          - platform.__DEVDOMAIN__
+    depends_on:
+      - php
+    labels:
+      - "traefik.enable=true"
+      # Aceita qualquer um desses domínios e manda para este Nginx
+      # O Nginx internamente decidirá qual site servir baseado no 'server_name' dos arquivos .conf
+      - >-
+        traefik.http.routers.${APP_PROJECT_NAME}.rule=
+        Host(`api.__DEVDOMAIN__`) || 
+        Host(`platform.__DEVDOMAIN__`)        
+      - "traefik.http.routers.${APP_PROJECT_NAME}.priority=10"
+      - "traefik.http.services.${APP_PROJECT_NAME}.loadbalancer.server.port=80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  php:
+    platform: linux/amd64
+    image: iporto99/php-8-3:latest
+    container_name: ${APP_PROJECT_NAME}-php
+    profiles:
+      - "development"
+    environment:
+      - PUID=${APP_UID}
+      - PGID=${APP_GID}
+      - TZ=UTC
+      - ALLOW_OVERRIDE=true
+    working_dir: /var/www/html
+    volumes:
+      - ${REMOTE_BASE_PATH}/code/api.__DOMAIN__:/var/www/html/api.__DOMAIN__:rw
+      - ${REMOTE_BASE_PATH}/code/platform.__DOMAIN__:/var/www/html/platform.__DOMAIN__:rw
+      # Configurações do PHP e do PHP-FPM
+      - ${REMOTE_BASE_PATH}/.docker/Php/conf/php-ini/php.ini:/usr/local/etc/php/php.ini
+      - ${REMOTE_BASE_PATH}/.docker/Php/conf.d/php-fpm.conf:/usr/local/etc/php-fpm.conf
+      - ${REMOTE_BASE_PATH}/.docker/Php/conf/sites-enabled:/usr/local/etc/php-fpm.d/sites-enabled
+    networks:
+      - shared
+    restart: unless-stopped
+
+  php-api:
+    platform: linux/amd64
+    image: iporto99/php-8-3:latest
+    container_name: ${APP_PROJECT_NAME}-php-api
+    profiles:
+      - "development"
+    environment:
+      - PUID=${APP_UID}
+      - PGID=${APP_GID}
+      - TZ=Etc/GMT-3
+      - ALLOW_OVERRIDE=true
+    working_dir: /var/www/html
+    volumes:
+      - ${REMOTE_BASE_PATH}/code/api.__DOMAIN__:/var/www/html/api.__DOMAIN__:rw
+    networks:
+      - shared
+    restart: unless-stopped
+    command: sh -c "chown 1000:1000 api.__DOMAIN__ -R && cd api.__DOMAIN__ && ./init-laravel.sh && tail -f /dev/null"
+
+  php-console:
+    platform: linux/amd64
+    image: iporto99/php-8-3:latest
+    container_name: ${APP_PROJECT_NAME}-php-console
+    profiles:
+      - "development"
+      - "command"
+    environment:
+      - PUID=${APP_UID}
+      - PGID=${APP_GID}
+      - TZ=Etc/GMT-3
+    volumes:
+      # - ${REMOTE_BASE_PATH}/code/:/var/www/html:rw
+      - ${REMOTE_BASE_PATH}/code/api.__DOMAIN__:/var/www/html/api.__DOMAIN__:rw
+      # Configurações para Cron
+      - ${REMOTE_BASE_PATH}/.docker/Console/cron.d/crontab:/etc/cron.d/crontab:ro      
+      # Configurações para Supervisor/Horizon
+      - ${REMOTE_BASE_PATH}/.docker/Console/conf.d/supervisord.conf:/etc/supervisor/supervisord.conf      
+      # Configurações do PHP, SSH e inicialização do container      
+      - ${REMOTE_BASE_PATH}/.docker/Ssh:/root/.ssh
+      - ${REMOTE_BASE_PATH}/.docker/Php/conf/php-ini/php.ini:/usr/local/etc/php/php.ini
+      - ${REMOTE_BASE_PATH}/.docker/Console/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    networks:
+      - shared
+    restart: unless-stopped
+    user: "0:0"
+    entrypoint:
+      - /bin/bash
+      - /docker-entrypoint-initdb.d/init.sh
+    healthcheck:
+      test: ["CMD", "php", "-v"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  env-platform:
+    platform: linux/amd64
+    image: iporto99/php-8-3:latest
+    container_name: ${APP_PROJECT_NAME}-env-platform
+    profiles:
+      - "development"
+    environment:
+      - PUID=${APP_UID}
+      - PGID=${APP_GID}
+      - TZ=UTC
+      - ALLOW_OVERRIDE=true
+    working_dir: /var/www/html
+    volumes:
+      - ${REMOTE_BASE_PATH}/code/platform.__DOMAIN__:/var/www/html/platform.__DOMAIN__:rw
+    networks:
+      - shared
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${APP_PROJECT_NAME}-vite-platform.rule=(Host(`platform.__DEVDOMAIN__`)) && (PathPrefix(`/@vite`) || PathPrefix(`/resources`) || PathPrefix(`/node_modules`) || PathPrefix(`/@id`) || PathPrefix(`/@fs`))"
+      - "traefik.http.routers.${APP_PROJECT_NAME}-vite-platform.priority=100"
+      - "traefik.http.services.${APP_PROJECT_NAME}-vite-platform.loadbalancer.server.port=5173"
+      # Middleware para WebSocket (necessário para HMR do Vite)
+      - "traefik.http.middlewares.${APP_PROJECT_NAME}-vite-platform-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+    restart: unless-stopped
+    command: sh -c "chown 1000:1000 platform.__DOMAIN__ -R && cd platform.__DOMAIN__ && ./init-laravel.sh && npm run dev -- --host 0.0.0.0"
+
+networks:
+  shared:
+    name: shared
+    external: true

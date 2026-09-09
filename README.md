@@ -117,6 +117,7 @@ EOF
 | `deploy-token-check` | Diagnostica o token de acesso ao registry |
 | `deploy-shim-install` | Instala os verbos num projeto (acima) |
 | `deploy-app-scaffold` | Instala os artefatos de build (Dockerfile, `.deploy/`, workflow) num repo de app |
+| `deploy-project-scaffold` | Cria o repo `deploy.<projeto>` de um SaaS novo: ambiente de dev + runbook |
 | `init-mutagen` | Sobe e diagnostica a sessão do Mutagen, para desenvolvimento com VM remota |
 
 Todo script tem `--help`. `deploy`, `deploy-sync` e `deploy-backup` aceitam `-n`
@@ -607,6 +608,41 @@ O que ele faz em cada projeto:
 > ⚠️ O `deploy-run` precisa existir na VM e **não** pode viajar pelo rsync: com o
 > shim, o `-L` copiaria o próprio shim. Ele é entregue por `push_deploy_run()` no
 > `deploy-sync`. Por isso o instalador mexe no `.rsyncignore`.
+
+---
+
+## `deploy-project-scaffold` — Cria o repo de um projeto novo
+
+Gera o `deploy.<projeto>` de um SaaS: o **ambiente de desenvolvimento** completo
+(compose, nginx, php, hosts, envs, verbos) e o esqueleto do runbook de produção.
+
+```bash
+./deploy-project-scaffold meuprojeto.com                      # dry-run
+./deploy-project-scaffold meuprojeto.com --ip 192.168.66.99 --apply
+./deploy-project-scaffold meuprojeto.com --apps api,platform,www --apply
+```
+
+| Opção | Padrão |
+|---|---|
+| `--slug` | primeiro rótulo do domínio (`meuprojeto`) |
+| `--dev-domain` | `<slug>.io` |
+| `--ip` | `192.168.66.1` — vai para o arquivo `hosts` |
+| `--apps` | `api,platform` (o mínimo); aceita `api,platform,www` |
+| `--dir` | `./deploy.<dominio>` |
+
+### O que ele deliberadamente NÃO gera
+
+Produção é **Coolify**, então não há `docker-compose.prd.yml`, `servers.yml` nem
+Watchtower — a esteira do aparato antigo não participa desta trilha.
+
+E os artefatos de build (`Dockerfile`, `.deploy/`, workflow) **não ficam aqui**:
+vivem em cada repo de app, instalados pelo `deploy-app-scaffold`. Os dois scripts
+são as duas metades do mesmo desenho — este cuida do **dev**, aquele cuida do
+**build para produção**.
+
+> ⚠️ O ambiente gerado espera uma rede Docker externa chamada `shared`, com
+> Traefik e os serviços de apoio (banco, cache, mail) já rodando nela. É a
+> topologia que estes scripts assumem; sem ela, ajuste o compose.
 
 ---
 

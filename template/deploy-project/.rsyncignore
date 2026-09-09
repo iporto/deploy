@@ -1,0 +1,113 @@
+# ─── Backups ─────────────────────────────────────────────────────────────────
+# Vêm DA VM para cá. Reenviá-los sobe o dump do banco de volta ao servidor.
+# O curinga é necessário: `backups/` sozinho não pega backups-legacy/.
+backup*/
+
+# ─── Envs decriptados ────────────────────────────────────────────────────────
+# .envs/*.env.prd é a fonte (cifrada, versionada) e É sincronizada.
+# .envs/*.env é o resultado decriptado, entregue depois pelo deploy-sync por
+# dentro do SSH. Sem esta exclusão o rsync os APAGA na VM (--delete), deixando
+# os containers sem o arquivo montado até o passo seguinte recriá-los.
+.envs/*.env
+
+# ─── Scratch local ───────────────────────────────────────────────────────────
+investigar.sh
+
+# ─── Ferramentas do Mac ──────────────────────────────────────────────────────
+# Symlinks para Deploy-Scripts/. O alvo não existe na VM: sincronizá-los só
+# planta links quebrados lá.
+#
+# ⚠️ deploy-run FICA FORA desta lista de propósito. Ele roda NA VM (modo local
+#    e o "./deploy-run" disparado via SSH pelo modo remoto) e por isso PRECISA
+#    ser entregue — é para isso que o deploy-sync usa -L (deferencia o symlink
+#    e envia o script real). Excluí-lo deixava a VM presa numa cópia antiga
+#    para sempre (foi assim que sobrou um deploy-run de antes da migração para
+#    REGISTRY_HOST/REGISTRY_TOKEN, ainda exigindo DOCKER_TOKEN/DOCKER_USER).
+deploy
+deploy-audit
+deploy-backup
+deploy-promote
+deploy-readme.md
+deploy-sync
+deploy-token-check
+envedit
+harden-vm
+
+# Diretórios de código (não sincronizar)
+code/
+Www/
+
+# Estado da aplicação — vive na VM, nunca vem do Mac
+storage/
+infrastructure/traefik/acme.json
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Ambientes virtuais Python
+venv/
+env/
+.venv/
+__pycache__/
+*.pyc
+
+# IDE e editores
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Arquivos de ambiente (exceto .env.stg que queremos sincronizar)
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+
+# Logs
+*.log
+logs/
+
+# Arquivos temporários
+tmp/
+temp/
+*.tmp
+cache/
+.cache/
+
+# Build artifacts
+dist/
+build/
+*.o
+*.so
+*.dylib
+
+# Composer (PHP)
+vendor/
+
+# Ruby
+.bundle/
+
+# Outros
+*.bak
+*.orig
+.vagrant/
+
+# ─── Shim de bootstrap ───────────────────────────────────────────────────────
+# Os verbos são symlinks relativos para .deploy/bin/shim e não servem na VM.
+#
+# ⚠️ deploy-run PRECISA existir na VM, mas é entregue explicitamente por
+#    push_deploy_run() no deploy-sync — não mais pelo rsync -L, que agora
+#    copiaria o próprio shim.
+deploy-run
+.deploy/

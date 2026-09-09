@@ -1,0 +1,6 @@
+# __PROJECT__: [DEV]
+# ------------------
+__DEVIP__ __DEVDOMAIN__ www.__DEVDOMAIN__
+__DEVIP__ api.__DEVDOMAIN__
+__DEVIP__ platform.__DEVDOMAIN__
+# ------------------

@@ -16,3 +16,7 @@
 *.key
 *.pem
 keys.txt
+
+# Exceção: o template do gerador precisa versionar o .example (sem valores).
+# Sem isto o deploy-project-scaffold nasce quebrado em qualquer clone.
+!template/deploy-project/.env.dev.example
