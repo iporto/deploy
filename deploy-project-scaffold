@@ -161,6 +161,15 @@ _instanciar_kit() {
   done
 }
 
+# ⚠️ sed -i não é portátil. O BSD (macOS) exige argumento de sufixo — `sed -i ''`
+#    — e o GNU (Linux) trata esse '' como NOME DE ARQUIVO, falhando com
+#    "can't read : No such file or directory". A biblioteca roda nos dois.
+if sed --version >/dev/null 2>&1; then
+  _sed_i() { sed -i "$@"; }          # GNU
+else
+  _sed_i() { sed -i '' "$@"; }       # BSD / macOS
+fi
+
 # Aponta o .env.example do app para a infra local e para este produto.
 _reescrever_env() {
   local dst="$1" app="$2" f="$1/.env.example"
@@ -169,7 +178,7 @@ _reescrever_env() {
   # DB_HOST=127.0.0.1 é a armadilha silenciosa: dentro do container isso é o
   # PRÓPRIO container, não o MySQL. E o init-laravel.sh copia este arquivo para
   # .env sozinho, então o app subiria apontando para o lugar errado sem avisar.
-  sed -i '' \
+  _sed_i \
     -e "s|^DB_HOST=.*|DB_HOST=infra-mysql|" \
     -e "s|^REDIS_HOST=.*|REDIS_HOST=infra-redis|" \
     -e "s|^MAIL_HOST=.*|MAIL_HOST=infra-mail|" \
@@ -183,7 +192,7 @@ _reescrever_env() {
   if [[ -n "$DB_ENV" ]]; then
     local k v
     while IFS='=' read -r k v; do
-      [[ -n "$k" ]] && sed -i '' "s|^${k}=.*|${k}=${v}|" "$f"
+      [[ -n "$k" ]] && _sed_i "s|^${k}=.*|${k}=${v}|" "$f"
     done < "$DB_ENV"
   fi
 }
