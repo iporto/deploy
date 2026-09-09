@@ -335,35 +335,56 @@ TXT
 fi
 
 # ─── O que falta ─────────────────────────────────────────────────────────────
+
+# Comando + o que ele faz, em colunas. A largura sai do comando mais longo do
+# bloco, então nada fica desalinhado quando um texto muda de tamanho.
+_tabela() {   # pares: comando, descrição, comando, descrição...
+  local w=0 i n
+  for (( i=1; i<=$#; i+=2 )); do
+    n=$(_larg "${!i}"); (( n > w )) && w=$n
+  done
+  for (( i=1; i<=$#; i+=2 )); do
+    local j=$((i+1))
+    printf '  %s%s%s   %s%s%s\n' "$BOLD" "$(_pad "${!i}" "$w")" "$NC" "$DIM" "${!j:-}" "$NC"
+  done
+}
+
+_passo() {    # número, o que é, comando, [nota]
+  printf '\n  %s%s.%s %s\n' "$BOLD" "$1" "$NC" "$2"
+  printf '       %s\n' "$3"
+  [[ -n "${4:-}" ]] && printf '       %s↳ %s%s\n' "$DIM" "$4" "$NC"
+  return 0
+}
+
 _titulo "Falta um passo — as dependências ainda instalam"
-cat <<TXT
+printf '\n  O %s e o %s de cada app rodam agora, em segundo plano.\n' \
+  "${BOLD}composer install${NC}" "${BOLD}npm install${NC}"
 
-  Confira quando terminarem:
-      deploy-doctor ${PROJETO}
-
-  Depois, para migrar e entrar:
-      docker exec ${SLUG}-php-api sh -c 'cd api.${DOMINIO} && php artisan migrate --force'
-      docker exec ${SLUG}-php-api sh -c 'cd api.${DOMINIO} && php artisan dev:token'
-
-  O último imprime um link pronto para entrar no painel, sem conta no Spelt.
-TXT
+_passo 1 "Confira se já terminaram" \
+        "deploy-doctor ${PROJETO}"
+_passo 2 "Crie as tabelas" \
+        "docker exec ${SLUG}-php-api sh -c 'cd api.${DOMINIO} && php artisan migrate --force'" \
+        "rodar antes do passo 1 falha com um erro sobre vendor/autoload.php"
+_passo 3 "Gere o acesso" \
+        "docker exec ${SLUG}-php-api sh -c 'cd api.${DOMINIO} && php artisan dev:token'" \
+        "imprime um link que abre o painel sem conta no Spelt"
 
 _titulo "No dia a dia"
-cat <<TXT
-
-  cd ${PROJETO} && ./deploy-run dev     subir o projeto
-  ./deploy-run dev stop                 parar
-  deploy-infra status                   o que está no ar
-  deploy-doctor ${PROJETO}              diagnosticar
-TXT
+printf '\n  %sdentro de %s%s\n\n' "$DIM" "$PROJETO" "$NC"
+_tabela \
+  "./deploy-run dev"      "subir o projeto" \
+  "./deploy-run dev stop" "parar" \
+  "deploy-doctor ."       "diagnosticar este projeto"
+printf '\n  %sde qualquer lugar%s\n\n' "$DIM" "$NC"
+_tabela \
+  "deploy-infra status"   "o que está no ar na máquina" \
+  "deploy-infra down"     "parar a base (os dados ficam)"
 
 _titulo "Construir o produto"
-cat <<TXT
-
-  Duplique ${PROJETO}/docs/TEMPLATE.md e desenhe o seu SaaS. É aí que aparecem
-  as necessidades reais — e a conta no Spelt.
-
-  Vai chamar alguém para o projeto? ${PROJETO}/docs/onboarding.md tem o
-  caminho de quem entra depois: são vários repositórios, um por app.
-
-TXT
+printf '\n'
+_tabela \
+  "docs/TEMPLATE.md"   "duplique e desenhe o seu SaaS" \
+  "docs/onboarding.md" "para quem entrar no projeto depois"
+printf '\n  %sos dois em %s%s\n' "$DIM" "$PROJETO" "$NC"
+printf '\n  É desenhando o produto que aparecem as necessidades reais — quais\n'
+printf '  planos, quais créditos, quais limites. E é aí que entra a conta no Spelt.\n\n' 
