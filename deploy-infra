@@ -22,6 +22,9 @@ set -uo pipefail
 # Uso do createdb:  ./deploy-infra createdb <nome> [--print-env] [--password P]
 #   Cria o database, um usuário homônimo e o grant. Sem --password, gera uma.
 #   Com --print-env, imprime só as 4 linhas prontas para o .env do app.
+#
+# Uso do reset:     ./deploy-infra reset [--force]
+#   --force pula a confirmação — só para quem já confirmou antes.
 ################################################################################
 
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
@@ -32,12 +35,13 @@ print_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
 print_warning() { echo -e "${YELLOW}[AVISO]${NC} $*"; }
 
 CMD="${1:-}"; shift 2>/dev/null || true
-CONTEXT=""; DB_NAME=""; DB_PASS=""; PRINT_ENV=false
+CONTEXT=""; DB_NAME=""; DB_PASS=""; PRINT_ENV=false; FORCE=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --context)    CONTEXT="$2"; shift 2 ;;
     --password)   DB_PASS="$2"; shift 2 ;;
     --print-env)  PRINT_ENV=true; shift ;;
+    --force)      FORCE=true; shift ;;
     -*) print_error "Opção desconhecida: $1"; exit 2 ;;
     *)  DB_NAME="$1"; shift ;;
   esac
@@ -196,13 +200,28 @@ CREATE USER IF NOT EXISTS '${DB_NAME}'@'%' IDENTIFIED BY '${DB_PASS}';
 ALTER USER '${DB_NAME}'@'%' IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_NAME}'@'%';
 FLUSH PRIVILEGES;"
-    if ! printf '%s\n' "$sql" | docker ${CONTEXT:+--context "$CONTEXT"} exec -i \
-         -e MYSQL_PWD="$root_pass" infra-mysql mariadb -uroot 2>/dev/null; then
+    # `2>&1 >/dev/null` (nesta ordem) captura SÓ o stderr: manda o stderr para a
+    # captura e depois joga o stdout fora. Sem isto o erro do MySQL ia para
+    # /dev/null e sobrava um "falhou" sem motivo.
+    if ! erro_sql="$(printf '%s\n' "$sql" | docker ${CONTEXT:+--context "$CONTEXT"} exec -i \
+         -e MYSQL_PWD="$root_pass" infra-mysql mariadb -uroot 2>&1 >/dev/null)"; then
+      # ⚠️ MASCARAR antes de imprimir. Um erro de sintaxe faz o cliente ecoar o
+      #    trecho do SQL — e o CREATE USER carrega a senha em texto puro.
+      [[ -n "$DB_PASS"   ]] && erro_sql="${erro_sql//$DB_PASS/***}"
+      [[ -n "$root_pass" ]] && erro_sql="${erro_sql//$root_pass/***}"
+
       print_error "Falha ao criar o database '${DB_NAME}'."
-      print_info  "O MySQL está saudável, então o mais provável é a credencial:"
-      print_info  "  confira MYSQL_ROOT_PASSWORD em ${ENV_FILE}."
-      print_info  "Se o valor mudou depois do primeiro up, o volume guarda a senha"
-      print_info  "antiga — nesse caso: deploy-infra reset (apaga os dados)."
+      [[ -n "$erro_sql" ]] && print_error "MySQL disse: $(printf '%s' "$erro_sql" | head -2 | tr '\n' ' ')"
+
+      # ⚠️ >&2 obrigatório. Com --print-env o stdout é ARQUIVO DE DADOS: sem isto
+      #    estas quatro dicas caem dentro dele e a pessoa vê só "Falha ao criar",
+      #    justamente quando mais precisa saber o motivo.
+      print_info  "O MySQL está saudável, então o mais provável é a credencial:" >&2
+      print_info  "  confira MYSQL_ROOT_PASSWORD em ${ENV_FILE}." >&2
+      print_info  "A senha do volume é a do PRIMEIRO boot. Se o arquivo mudou depois" >&2
+      print_info  "(ex.: você reclonou a biblioteca), elas divergiram. Saídas:" >&2
+      print_info  "  • recuperar a senha antiga e colocá-la no arquivo, ou" >&2
+      print_info  "  • deploy-infra reset  — recria o volume e APAGA os dados." >&2
       exit 1
     fi
 
@@ -228,8 +247,13 @@ FLUSH PRIVILEGES;"
   logs) "${DC[@]}" logs -f --tail=100 ;;
   reset)
     print_warning "Isto APAGA os volumes: banco, cache e e-mails locais somem."
-    read -r -p "Digite 'apagar' para confirmar: " ok
-    [[ "$ok" == "apagar" ]] || { print_info "Cancelado."; exit 0; }
+    # --force existe para quem JÁ confirmou noutro lugar (o assistente pergunta
+    # com o que será perdido escrito na tela). Pedir de novo logo em seguida
+    # treina a pessoa a digitar 'apagar' no reflexo, que é o oposto do objetivo.
+    if ! $FORCE; then
+      read -r -p "Digite 'apagar' para confirmar: " ok
+      [[ "$ok" == "apagar" ]] || { print_info "Cancelado."; exit 0; }
+    fi
     "${DC[@]}" down -v && print_success "Infra derrubada e volumes apagados."
     ;;
 esac

@@ -192,6 +192,37 @@ _env_vazia() {
   local v; v="$(grep -E "^${1}=" "$ENVI" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
   [[ -z "$v" ]]
 }
+# ⚠️ O MySQL grava a senha do root no VOLUME, no primeiro boot, e nunca mais a
+#    relê do env. Se o volume já existe e o arquivo está vazio — o caso de quem
+#    reclona a biblioteca numa máquina que já tinha o ambiente — gerar uma senha
+#    aqui é falha GARANTIDA três passos adiante, com um erro que culpa a
+#    credencial. E ela parece certa no arquivo.
+_volume_mysql_existe() {
+  docker volume ls --format '{{.Name}}' 2>/dev/null | grep -qx 'infra_mysql-data'
+}
+if [[ -f "$ENVI" ]] && _env_vazia MYSQL_ROOT_PASSWORD && _volume_mysql_existe; then
+  _warn "esta máquina já tem uma base de dados, mas a senha do root sumiu"
+  cat <<TXT
+
+  O volume ${BOLD}infra_mysql-data${NC} existe e guarda a senha gravada no primeiro
+  boot. O arquivo de senhas está vazio — provavelmente a biblioteca foi
+  reclonada, porque ${BOLD}infra/.env.dev${NC} não é versionado.
+
+  Gerar uma senha nova aqui não muda a que está dentro do volume: a instalação
+  falharia no passo 3, dizendo que a credencial está errada.
+
+TXT
+  R=$(_menu "Como seguir?" 1 \
+    "Parar aqui — eu recupero a senha antiga e coloco no arquivo" \
+    "Recriar a base do zero — ${BOLD}APAGA${NC} os bancos locais desta máquina")
+  if [[ "$R" == "1" ]]; then
+    _info "Coloque MYSQL_ROOT_PASSWORD em ${ENVI} e rode o assistente de novo."
+    exit 0
+  fi
+  _info "Recriando a base..."
+  _rodar deploy-infra reset --force || { _erro "Falha ao recriar a base."; exit 1; }
+fi
+
 if [[ -f "$ENVI" ]] && _env_vazia MYSQL_ROOT_PASSWORD; then
   _info "Gerando senhas locais com ${BOLD}openssl rand -hex 24${NC}..."
   for k in MYSQL_ROOT_PASSWORD REDIS_PASSWORD; do
