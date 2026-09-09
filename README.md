@@ -520,7 +520,7 @@ O que ele faz em cada projeto:
 
 | Ação | Detalhe |
 |---|---|
-| Instala `.deploy/bin/shim` | Cópia de `templates/shim`, versionada no projeto |
+| Instala `.deploy/bin/shim` | Cópia de `template/shim`, versionada no projeto |
 | Converte os verbos | Symlink absoluto → symlink **relativo** para o shim |
 | `deploy-readme.md` | Vira ponteiro real — não se executa um markdown |
 | `.rsyncignore` | Acrescenta `deploy-run` e `.deploy/`, se o arquivo existir |

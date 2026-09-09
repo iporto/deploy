@@ -43,7 +43,7 @@ _scripts_dir() {
   cd -P "$(dirname "$src")" && pwd
 }
 SCRIPTS_DIR="$(_scripts_dir)"
-TEMPLATE="${SCRIPTS_DIR}/templates/shim"
+TEMPLATE="${SCRIPTS_DIR}/template/shim"
 
 [[ -f "$TEMPLATE" ]] || { echo "${RED}Template não encontrado: ${TEMPLATE}${NC}" >&2; exit 1; }
 [[ -d "$ROOT"     ]] || { echo "${RED}Diretório não encontrado: ${ROOT}${NC}" >&2; exit 1; }
