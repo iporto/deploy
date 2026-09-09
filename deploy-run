@@ -153,6 +153,24 @@ set -o allexport
 source .env
 set +o allexport
 
+# ─── REMOTE_BASE_PATH é relativo ao DAEMON, não a esta máquina ────────────────
+#
+# Os bind mounts do compose resolvem no filesystem de quem roda os containers.
+# Com um contexto Docker remoto (ssh://) isso é o caminho na VM — que é o valor
+# guardado no .env. Com um daemon local, é o diretório do projeto AQUI.
+#
+# Sem este ajuste, `docker compose up` num contexto local tentaria montar o
+# caminho da VM, que não existe: os containers sobem com volumes vazios e o
+# sintoma aparece longe da causa.
+#
+# É isto que faz `./deploy-run dev` funcionar nos dois mundos sem configuração.
+case "$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" in
+  unix://*|npipe://*)
+    REMOTE_BASE_PATH="$PWD"
+    export REMOTE_BASE_PATH
+    ;;
+esac
+
 # Valida variáveis obrigatórias
 if [[ -z "${APP_ENV:-}" || -z "${APP_PROJECT_NAME:-}" ]]; then
   print_error "APP_ENV ou APP_PROJECT_NAME não definidos no .env"

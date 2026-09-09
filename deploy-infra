@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+################################################################################
+# deploy-infra — sobe a infra de desenvolvimento compartilhada
+#
+# Cria a rede `shared` e os serviços que todo projeto espera achar nela:
+# Traefik (roteamento), MariaDB, Redis e Mailpit.
+#
+# Sobe UMA vez por máquina — ou por contexto Docker, que dá no mesmo: o comando
+# respeita o contexto ativo. Contexto local sobe na sua máquina; um contexto
+# ssh:// sobe na VM. Os projetos não mudam nada por causa disso.
+#
+# Uso:  ./deploy-infra <comando> [--context NOME]
+#   up        cria a rede e sobe os serviços
+#   down      derruba, PRESERVANDO os volumes (os dados ficam)
+#   status    o que está no ar e em qual contexto
+#   logs      acompanha os logs
+#   reset     derruba E APAGA os volumes — o banco volta do zero
+################################################################################
+
+RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m'; BOLD=$'\033[1m'; NC=$'\033[0m'
+print_error()   { echo -e "${RED}[ERRO]${NC} $*" >&2; }
+print_success() { echo -e "${GREEN}[OK]${NC} $*"; }
+print_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
+print_warning() { echo -e "${YELLOW}[AVISO]${NC} $*"; }
+
+CMD="${1:-}"; shift 2>/dev/null || true
+CONTEXT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --context) CONTEXT="$2"; shift 2 ;;
+    *) print_error "Opção desconhecida: $1"; exit 2 ;;
+  esac
+done
+case "$CMD" in
+  -h|--help|'') sed -n '5,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  up|down|status|logs|reset) ;;
+  *) print_error "Comando inválido: ${CMD}"; echo "Use: up | down | status | logs | reset" >&2; exit 2 ;;
+esac
+
+_scripts_dir() {
+  local src="${BASH_SOURCE[0]}"
+  while [[ -L "$src" ]]; do
+    local d; d="$(cd -P "$(dirname "$src")" && pwd)"; src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="${d}/${src}"
+  done
+  cd -P "$(dirname "$src")" && pwd
+}
+DIR="$(_scripts_dir)/dev-infra"
+[[ -f "$DIR/docker-compose.yml" ]] || { print_error "Compose não encontrado: $DIR"; exit 1; }
+
+command -v docker >/dev/null 2>&1 || { print_error "docker não encontrado"; exit 1; }
+DC=(docker compose); docker compose version >/dev/null 2>&1 || DC=(docker-compose)
+[[ -n "$CONTEXT" ]] && DC=(docker --context "$CONTEXT" compose)
+
+# ─── Onde isto vai rodar ─────────────────────────────────────────────────────
+#
+# O contexto decide o destino, e o dev PRECISA ver isso antes de qualquer ação:
+# subir a infra na VM errada é fácil e confuso de diagnosticar.
+ctx_name="${CONTEXT:-$(docker context show 2>/dev/null || echo default)}"
+ctx_host="$(docker context inspect "$ctx_name" --format '{{.Endpoints.docker.Host}}' 2>/dev/null || echo '?')"
+case "$ctx_host" in
+  unix://*|npipe://*) ctx_kind="${GREEN}LOCAL${NC}" ;;
+  ssh://*|tcp://*)    ctx_kind="${YELLOW}REMOTO${NC}" ;;
+  *)                  ctx_kind="?" ;;
+esac
+echo -e "${BOLD}Contexto${NC}  ${ctx_name}  (${ctx_kind}) — ${ctx_host}"
+echo
+
+ENV_FILE="$DIR/.env"
+_require_env() {
+  if [[ ! -f "$ENV_FILE" ]]; then
+    cp "$DIR/.env.example" "$ENV_FILE"
+    print_warning "Criei ${ENV_FILE} a partir do template."
+    print_error   "Preencha MYSQL_ROOT_PASSWORD e REDIS_PASSWORD antes de subir."
+    exit 1
+  fi
+  local faltando=()
+  for k in MYSQL_ROOT_PASSWORD REDIS_PASSWORD; do
+    grep -qE "^${k}=.+" "$ENV_FILE" || faltando+=("$k")
+  done
+  if [[ ${#faltando[@]} -gt 0 ]]; then
+    print_error "Sem valor em ${ENV_FILE}: ${faltando[*]}"
+    print_info  "São senhas locais suas — invente e preencha."
+    exit 1
+  fi
+}
+
+cd "$DIR" || exit 1
+case "$CMD" in
+  up)
+    _require_env
+    print_info "Subindo a infra..."
+    "${DC[@]}" up -d --remove-orphans || { print_error "Falha ao subir"; exit 1; }
+    echo
+    "${DC[@]}" ps --format 'table {{.Name}}\t{{.Status}}' 2>/dev/null || "${DC[@]}" ps
+    echo
+    print_success "Rede 'shared' criada e infra no ar."
+    src_port=$(grep -E '^TRAEFIK_DASHBOARD_PORT=' "$ENV_FILE" | cut -d= -f2); src_port="${src_port:-8080}"
+    mail_port=$(grep -E '^MAILPIT_WEB_PORT=' "$ENV_FILE" | cut -d= -f2); mail_port="${mail_port:-8025}"
+    print_info "Traefik:  http://127.0.0.1:${src_port}   (dashboard, só loopback)"
+    print_info "Mailpit:  http://127.0.0.1:${mail_port}"
+    ;;
+  down)
+    print_info "Derrubando (os volumes ficam)..."
+    "${DC[@]}" down && print_success "Infra parada. Os dados foram preservados."
+    ;;
+  status)
+    "${DC[@]}" ps --format 'table {{.Name}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || "${DC[@]}" ps
+    echo
+    if docker network inspect shared >/dev/null 2>&1; then
+      print_success "Rede 'shared' existe."
+    else
+      print_warning "Rede 'shared' NÃO existe — rode: deploy-infra up"
+    fi
+    ;;
+  logs) "${DC[@]}" logs -f --tail=100 ;;
+  reset)
+    print_warning "Isto APAGA os volumes: banco, cache e e-mails locais somem."
+    read -r -p "Digite 'apagar' para confirmar: " ok
+    [[ "$ok" == "apagar" ]] || { print_info "Cancelado."; exit 0; }
+    "${DC[@]}" down -v && print_success "Infra derrubada e volumes apagados."
+    ;;
+esac
