@@ -160,9 +160,17 @@ ENVI="${LIB}/infra/.env.dev"
 if [[ ! -f "$ENVI" ]]; then
   deploy-infra up >/dev/null 2>&1 || true   # cria o template
 fi
-if [[ -f "$ENVI" ]] && ! grep -qE '^MYSQL_ROOT_PASSWORD=".+"' "$ENVI"; then
+# ⚠️ Só gera se estiver REALMENTE vazia. Um regex que exigisse aspas não casaria
+#    uma senha já preenchida sem elas — e o assistente a sobrescreveria, deixando
+#    o volume do MySQL inacessível com a senha antiga lá dentro.
+_env_vazia() {
+  local v; v="$(grep -E "^${1}=" "$ENVI" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
+  [[ -z "$v" ]]
+}
+if [[ -f "$ENVI" ]] && _env_vazia MYSQL_ROOT_PASSWORD; then
   _info "Gerando senhas locais com ${BOLD}openssl rand -hex 24${NC}..."
   for k in MYSQL_ROOT_PASSWORD REDIS_PASSWORD; do
+    _env_vazia "$k" || continue
     v="$(openssl rand -hex 24 2>/dev/null || head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)"
     if sed --version >/dev/null 2>&1; then sed -i "s|^${k}=.*|${k}=\"${v}\"|" "$ENVI"
     else sed -i '' "s|^${k}=.*|${k}=\"${v}\"|" "$ENVI"; fi
