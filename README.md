@@ -85,6 +85,27 @@ aponte a variável:
 export DEPLOY_SCRIPTS_HOME=/onde/você/clonou
 ```
 
+### Fixar uma versão
+
+Cada push na `main` publica uma versão SemVer — veja os
+[releases](https://github.com/iporto/deploy/releases). O clone acima segue a
+`main`, isto é, **pega o estado mais recente sempre**.
+
+Sozinho isso é conveniente. Em equipe é fonte de "na minha máquina funciona":
+duas pessoas clonam com uma semana de diferença e rodam código diferente. Para
+um time, ou para um projeto que precisa reproduzir o ambiente mais tarde, fixe:
+
+```bash
+git clone --branch v1.0.0 --depth 1 https://github.com/iporto/deploy.git ~/.deploy-scripts
+```
+
+Para saber qual versão está instalada, e para trocar:
+
+```bash
+git -C ~/.deploy-scripts describe --tags
+git -C ~/.deploy-scripts fetch --tags && git -C ~/.deploy-scripts checkout v1.2.3
+```
+
 Depois, dentro do seu projeto:
 
 ```bash

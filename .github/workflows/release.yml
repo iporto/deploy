@@ -1,0 +1,103 @@
+name: Release
+
+# Por que este workflow existe
+#
+# A biblioteca é consumida por `git clone` — pelo assistente, pelo README do kit
+# e pelos 15 projetos `deploy.*`. Sem tag, todo mundo pega o `main` do momento:
+# um commit aqui chega direto na próxima máquina que clonar, e quem foi afetado
+# não tem para onde voltar.
+#
+# Cada push na main vira uma versão SemVer, calculada a partir do prefixo dos
+# commits (feat: → minor, fix: → patch, BREAKING CHANGE → major). É o que dá ao
+# consumidor um `--branch vX.Y.Z` para fixar e um ponto de retorno.
+#
+# Modelado no gh-deploy.PRD.yml do Codijo/api.spelt.com.br.
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # A ação de SemVer precisa do histórico inteiro para achar a última tag.
+          fetch-depth: 0
+
+      - name: Conferir a sintaxe dos scripts
+        # ⚠️ Um erro de sintaxe aqui quebra os 15 projetos de uma vez. `bash -n`
+        #    não executa nada e pega o que mais dói: aspas e blocos não fechados.
+        #    Barato o bastante para ser porteiro de release.
+        run: |
+          erros=0
+          while IFS= read -r f; do
+            head -1 "$f" | grep -qE '^#!.*(bash|sh)' || continue
+            if bash -n "$f"; then
+              echo "  ok    $f"
+            else
+              echo "::error file=$f::erro de sintaxe"
+              erros=$((erros + 1))
+            fi
+          done < <(find . -maxdepth 2 -type f -perm -u+x -not -path './.git/*')
+          [ "$erros" -eq 0 ] || { echo "::error::$erros script(s) com erro de sintaxe — release abortado"; exit 1; }
+
+      - name: Calcular a próxima versão
+        id: semver
+        uses: ietf-tools/semver-action@v1
+        with:
+          token: ${{ github.token }}
+          branch: main
+          # Commit sem prefixo reconhecido ainda gera versão: o consumidor precisa
+          # de um ponto de retorno mesmo quando a mensagem não seguiu a convenção.
+          noVersionBumpBehavior: 'patch'
+          # A biblioteca já roda em produção nos 15 projetos antes da primeira tag.
+          # Sair de 0.x diria que é experimental, o que não é verdade.
+          fallbackTag: 'v1.0.0'
+
+      - name: Criar e publicar a tag
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag ${{ steps.semver.outputs.next }}
+          git push origin ${{ steps.semver.outputs.next }}
+
+      - name: Criar o Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # actions/create-release@v1 foi arquivada pelo GitHub; softprops é a
+        # sucessora mantida.
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.semver.outputs.next }}
+          name: ${{ steps.semver.outputs.next }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resumo
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          {
+            echo "### ${{ steps.semver.outputs.next }} publicada"
+            echo ""
+            echo "Para fixar esta versão numa máquina:"
+            echo ""
+            echo '```bash'
+            echo "git clone --branch ${{ steps.semver.outputs.next }} --depth 1 \\"
+            echo "  https://github.com/iporto/deploy.git ~/.deploy-scripts"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
