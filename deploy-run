@@ -351,12 +351,19 @@ for network in external shared; do
 done
 
 # Configuração do Watchtower (credencial de LEITURA do registry)
-rm -f .docker/Watchtower/config.json
-REGISTRY_TOKEN_BASE64=$(echo -n "$REGISTRY_USER:$REGISTRY_TOKEN" | base64)
-DOCKER_TOKEN_BASE64="$REGISTRY_TOKEN_BASE64"   # nome antigo, mantido para templates legados
-export REGISTRY_TOKEN_BASE64 DOCKER_TOKEN_BASE64
-envsubst < .docker/Watchtower/config.template.json > .docker/Watchtower/config.json
-chmod 600 .docker/Watchtower/config.json
+#
+# Só existe em projetos da trilha antiga, onde o Watchtower observa a tag :prd.
+# Na trilha Coolify não há Watchtower — o deploy é o webhook do painel — e este
+# diretório simplesmente não existe. Antes disso o script morria aqui, num
+# projeto que nunca teve nem precisaria ter Watchtower.
+if [[ -f .docker/Watchtower/config.template.json ]]; then
+  rm -f .docker/Watchtower/config.json
+  REGISTRY_TOKEN_BASE64=$(echo -n "$REGISTRY_USER:$REGISTRY_TOKEN" | base64)
+  DOCKER_TOKEN_BASE64="$REGISTRY_TOKEN_BASE64"   # nome antigo, mantido para templates legados
+  export REGISTRY_TOKEN_BASE64 DOCKER_TOKEN_BASE64
+  envsubst < .docker/Watchtower/config.template.json > .docker/Watchtower/config.json
+  chmod 600 .docker/Watchtower/config.json
+fi
 
 ################################################################################
 
