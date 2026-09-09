@@ -95,9 +95,12 @@ _require_env() {
     print_error   "Preencha MYSQL_ROOT_PASSWORD e REDIS_PASSWORD antes de subir."
     exit 1
   fi
-  local faltando=()
+  # ⚠️ Tira as aspas antes de julgar: KEY="" tem conteúdo para o grep, mas é
+  #    valor vazio. Sem isto o guard deixa passar um template não preenchido.
+  local faltando=() v
   for k in MYSQL_ROOT_PASSWORD REDIS_PASSWORD; do
-    grep -qE "^${k}=.+" "$ENV_FILE" || faltando+=("$k")
+    v="$(grep -E "^${k}=" "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
+    [[ -n "$v" ]] || faltando+=("$k")
   done
   if [[ ${#faltando[@]} -gt 0 ]]; then
     print_error "Sem valor em ${ENV_FILE}: ${faltando[*]}"

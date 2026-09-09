@@ -79,11 +79,11 @@ services:
     platform: ${INFRA_PLATFORM:-linux/amd64}
     container_name: infra-mysql
     environment:
-      - TZ=${TZ:-UTC}
+      - TZ=${TZ:-America/Sao_Paulo}
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:?defina em infra/.env.dev}
       - MYSQL_ROOT_HOST=%
     command:
-      - --default-time-zone=${TZ:-UTC}
+      - --default-time-zone=${TZ:-America/Sao_Paulo}
       - --max-connections=150
       # Dimensionado para estação de trabalho. Num servidor dedicado, aumente.
       - --innodb-buffer-pool-size=${MYSQL_BUFFER_POOL:-256M}
