@@ -192,6 +192,7 @@ _reescrever_env() {
     -e "s|^MAIL_HOST=.*|MAIL_HOST=infra-mail|" \
     -e "s|^DB_DATABASE=.*|DB_DATABASE=${SLUG}|" \
     -e "s|^APP_URL=.*|APP_URL=http://${app}.${DEVDOMAIN}|" \
+    -e "s|^APP_PLATFORM_URL=.*|APP_PLATFORM_URL=http://platform.${DEVDOMAIN}|" \
     -e "s|^APP_NAME=.*|APP_NAME=\"${titulo} $(echo "${app:0:1}" | tr '[:lower:]' '[:upper:]')${app:1}\"|" \
     -e "s|^VITE_URL=.*|VITE_URL=http://${app}.${DEVDOMAIN}|" \
     -e "s|^VITE_HMR_HOST=.*|VITE_HMR_HOST=${app}.${DEVDOMAIN}|" \
