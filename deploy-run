@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+################################################################################
+# ⚠️ ESTE SCRIPT PRECISA SER AUTOSSUFICIENTE — NÃO DÊ `source` EM NADA.
+#
+# Ele é o único da biblioteca que roda DENTRO da VM, e chega lá sozinho: o
+# push_deploy_run() do deploy-sync copia este arquivo, e só ele, pela conexão
+# SSH. Nenhuma outra parte da biblioteca existe no servidor.
+#
+# Portanto: as funções print_*, as cores e o _scripts_dir() estão duplicadas aqui
+# de propósito. Extrair para um lib.sh compartilhado — tentador, porque a
+# duplicação é real em 9 scripts — QUEBRA PRODUÇÃO: a lib não seria entregue, e
+# o erro só apareceria no primeiro deploy depois da mudança.
+#
+# Se um dia a lib for extraída, o push_deploy_run() tem de entregá-la junto.
+################################################################################
+
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'

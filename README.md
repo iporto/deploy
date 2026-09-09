@@ -118,7 +118,6 @@ EOF
 | `deploy-shim-install` | Instala os verbos num projeto (acima) |
 | `deploy-app-scaffold` | Instala os artefatos de build (Dockerfile, `.deploy/`, workflow) num repo de app |
 | `deploy-project-scaffold` | Cria o repo `deploy.<projeto>` de um SaaS novo: ambiente de dev + runbook |
-| `init-mutagen` | Sobe e diagnostica a sessão do Mutagen, para desenvolvimento com VM remota |
 
 Todo script tem `--help`. `deploy`, `deploy-sync` e `deploy-backup` aceitam `-n`
 para simular; `harden-vm` e `deploy-shim-install` **só simulam** até receberem
