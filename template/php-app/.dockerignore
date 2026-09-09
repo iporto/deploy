@@ -1,0 +1,27 @@
+# Contexto de build enxuto e SEGURO (o COPY . . não pode levar segredo nem lixo).
+.git
+.github
+.gitignore
+
+# ⚠️ NUNCA embutir env na imagem — o Coolify injeta em runtime.
+.env
+.env.*
+
+# Regenerados no build (composer install / npm ci) — não trazer versão do host.
+vendor
+node_modules
+
+# Marcadores/artefatos de dev.
+public/hot
+storage/logs/*.log
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+
+# ⚠️ Cache de bootstrap do DEV (packages.php/services.php) referencia pacotes de dev
+#    (ex.: laravel/pail) ausentes no --no-dev → package:discover quebra. Regenerado no build.
+bootstrap/cache/*
+
+# Não precisa na imagem de runtime.
+tests
+.deploy/*.md

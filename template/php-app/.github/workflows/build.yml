@@ -1,0 +1,91 @@
+# Build da imagem de produção → GHCR (Modelo 2 do kit: o build sai da VM do Coolify).
+#
+#   push na main → GitHub Actions builda o Dockerfile → ghcr.io/<owner>/<projeto>-<app>:{latest, sha-XXXXXXX}
+#                → dispara o webhook de deploy do Coolify (que puxa a imagem nova e recria o container).
+#   Nome no padrão do ecossistema ({projeto}-{finalidade}), derivado do repo <app>.<projeto>.<tld>
+#   (ex.: api.meuprojeto.com → meuprojeto-api). Sem hardcode — serve qualquer repo no padrão.
+#
+# Secrets necessários (Settings → Secrets and variables → Actions):
+#   • COOLIFY_URL        (org)   ex.: https://coolify-001.iporto.net.br
+#   • COOLIFY_TOKEN      (org)   API token do Coolify (Keys & Tokens → API tokens)
+#   • COOLIFY_APP_UUID   (repo)  uuid da app no Coolify (fica na URL/aba da app)
+#   • DOCKERHUB_USERNAME / DOCKERHUB_TOKEN  (org, OPCIONAL)  só se a base iporto99/* for privada no Docker Hub
+#
+# GITHUB_TOKEN é automático (empurra pro GHCR com permissions: packages: write).
+# ⚠️ O pacote no GHCR nasce PRIVADO — dê ao Coolify uma credencial de leitura do ghcr.io
+#    (PAT com read:packages) em Docker Registries, ou torne o pacote público.
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    # secrets não podem ser usados em `if:` — expõe-se via env do job e checa-se env.X no passo.
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      COOLIFY_APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login Docker Hub (base privada — opcional)
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Metadados da imagem
+        id: meta
+        run: |
+          # Padrão {projeto}-{finalidade} a partir do repo <app>.<projeto>.<tld>:
+          #   api.meuprojeto.com → app=api, projeto=meuprojeto → ghcr.io/<owner>/meuprojeto-api
+          repo="${GITHUB_REPOSITORY##*/}"            # api.meuprojeto.com
+          app="${repo%%.*}"                          # api
+          rest="${repo#*.}"; project="${rest%%.*}"   # meuprojeto
+          owner="${GITHUB_REPOSITORY_OWNER,,}"       # iporto
+          echo "image=ghcr.io/${owner}/${project}-${app}" >> "$GITHUB_OUTPUT"
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:latest
+            ${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Disparar deploy no Coolify
+        if: env.COOLIFY_APP_UUID != ''
+        env:
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          # COOLIFY_APP_UUID aceita vários UUIDs separados por vírgula — o repo da API
+          # redeploya api + worker + scheduler (mesma imagem) num push só. Um GET por UUID.
+          for uuid in ${COOLIFY_APP_UUID//,/ }; do
+            echo "Deploy → $uuid"
+            curl --fail --silent --show-error -L -X POST \
+              "${COOLIFY_URL}/api/v1/deploy?uuid=${uuid}&force=false" \
+              -H "Authorization: Bearer ${COOLIFY_TOKEN}"
+            echo
+          done

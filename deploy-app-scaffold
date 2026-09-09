@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+################################################################################
+# deploy-app-scaffold — instala/atualiza os artefatos de build num repo de app
+#
+# Entrega Dockerfile, .dockerignore, .deploy/ e o workflow de build a partir de
+# UM template canônico (template/php-app), para que a imagem possa ser buildada
+# pelo próprio repo do app — requisito da trilha Coolify.
+#
+# Resolve o dilema "centralizado vs distribuído": a fonte é única (aqui), mas o
+# artefato viaja com o app. Rodar sem --apply mostra quem está defasado.
+#
+# Tipos:  api  → sem build de frontend
+#         web  → + npm run build (platform, www)
+#         (detectado sozinho por package.json + vite.config.*)
+#
+# Uso:  ./deploy-app-scaffold [DIR] [--type api|web] [--apply] [--force]
+#       DIR pode ser um repo de app ou um diretório que contenha vários.
+################################################################################
+
+case "${1:-}" in
+  -h|--help) sed -n '5,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m'; BOLD=$'\033[1m'; NC=$'\033[0m'
+
+APPLY=false; FORCE=false; TYPE=""; ROOT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --apply) APPLY=true; shift ;;
+    --force) FORCE=true; shift ;;
+    --type)  TYPE="$2"; shift 2 ;;
+    -*) echo "Opção desconhecida: $1" >&2; exit 2 ;;
+    *)  ROOT="$1"; shift ;;
+  esac
+done
+ROOT="${ROOT:-$PWD}"
+[[ -z "$TYPE" || "$TYPE" == "api" || "$TYPE" == "web" ]] || { echo "--type deve ser api ou web" >&2; exit 2; }
+
+_scripts_dir() {
+  local src="${BASH_SOURCE[0]}"
+  while [[ -L "$src" ]]; do
+    local d; d="$(cd -P "$(dirname "$src")" && pwd)"; src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="${d}/${src}"
+  done
+  cd -P "$(dirname "$src")" && pwd
+}
+TPL="$(_scripts_dir)/template/php-app"
+[[ -d "$TPL" ]] || { echo "${RED}Template não encontrado: ${TPL}${NC}" >&2; exit 1; }
+
+# É um repo de app Laravel? (composer.json + artisan)
+_is_app() { [[ -f "$1/composer.json" && -f "$1/artisan" ]]; }
+
+APPS=()
+if _is_app "$ROOT"; then APPS=("$ROOT")
+else
+  while IFS= read -r d; do _is_app "$d" && APPS+=("$d"); done < <(find "$ROOT" -maxdepth 3 -type d -not -path '*/vendor/*' -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null | sort)
+fi
+[[ ${#APPS[@]} -gt 0 ]] || { echo "Nenhum app Laravel (composer.json + artisan) em ${ROOT}"; exit 1; }
+
+$APPLY || echo "${YELLOW}${BOLD}DRY-RUN${NC} — nada será escrito. Use --apply.${NC}"
+echo
+
+TOT=0; NEW=0; OK=0; DRIFT=0
+for app in "${APPS[@]}"; do
+  TOT=$((TOT+1)); name="$(basename "$app")"
+
+  t="$TYPE"
+  if [[ -z "$t" ]]; then
+    if [[ -f "$app/package.json" ]] && compgen -G "$app/vite.config.*" >/dev/null; then t=web; else t=api; fi
+  fi
+
+  # destino → origem no template
+  declare -a PAIRS=(
+    "Dockerfile|${TPL}/Dockerfile.$( [[ $t == web ]] && echo web || echo api )"
+    ".dockerignore|${TPL}/.dockerignore"
+    ".deploy/nginx.conf|${TPL}/.deploy/nginx.conf"
+    ".deploy/supervisord.conf|${TPL}/.deploy/supervisord.conf"
+    ".deploy/entrypoint.sh|${TPL}/.deploy/entrypoint.sh"
+    ".github/workflows/build.yml|${TPL}/.github/workflows/build.yml"
+  )
+
+  lines=(); n_new=0; n_drift=0
+  for pair in "${PAIRS[@]}"; do
+    dst="${pair%%|*}"; src="${pair#*|}"
+    if [[ ! -f "$app/$dst" ]]; then lines+=("  ${GREEN}+${NC} ${dst}  (ausente)"); n_new=$((n_new+1))
+    elif cmp -s "$src" "$app/$dst"; then lines+=("  ${BLUE}=${NC} ${dst}")
+    else lines+=("  ${YELLOW}≠${NC} ${dst}  ${YELLOW}DIVERGE do template${NC}"); n_drift=$((n_drift+1)); fi
+  done
+
+  if [[ $n_new -eq 0 && $n_drift -eq 0 ]]; then
+    printf '%s✓%s %-28s [%s] tudo em dia\n' "$GREEN" "$NC" "$name" "$t"; OK=$((OK+1)); continue
+  fi
+  printf '%s→%s %-28s [%s]\n' "$BLUE" "$NC" "$name" "$t"
+  printf '%b\n' "${lines[@]}"
+  [[ $n_new   -gt 0 ]] && NEW=$((NEW+1))
+  [[ $n_drift -gt 0 ]] && DRIFT=$((DRIFT+1))
+  $APPLY || continue
+
+  for pair in "${PAIRS[@]}"; do
+    dst="${pair%%|*}"; src="${pair#*|}"
+    if [[ -f "$app/$dst" ]] && ! cmp -s "$src" "$app/$dst" && ! $FORCE; then
+      printf '  %s!%s %s mantido — use --force para sobrescrever\n' "$YELLOW" "$NC" "$dst"; continue
+    fi
+    mkdir -p "$(dirname "$app/$dst")" && cp "$src" "$app/$dst"
+    [[ "$dst" == *entrypoint.sh ]] && chmod 755 "$app/$dst"
+  done
+  printf '  %s✓ aplicado%s\n' "$GREEN" "$NC"
+done
+
+echo
+echo "${BOLD}Apps: ${TOT}${NC}  •  em dia: ${OK}  •  com arquivo faltando: ${NEW}  •  divergentes: ${DRIFT}"
+if ! $APPLY; then
+  hint=""; [[ $DRIFT -gt 0 ]] && hint=" (e --force para atualizar os divergentes)"
+  echo "${YELLOW}Rode com --apply para escrever${hint}.${NC}"
+fi

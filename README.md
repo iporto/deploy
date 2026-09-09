@@ -116,6 +116,7 @@ EOF
 | `deploy-audit` | Varre vários projetos procurando env em texto puro, porta exposta, `chmod 777` |
 | `deploy-token-check` | Diagnostica o token de acesso ao registry |
 | `deploy-shim-install` | Instala os verbos num projeto (acima) |
+| `deploy-app-scaffold` | Instala os artefatos de build (Dockerfile, `.deploy/`, workflow) num repo de app |
 | `init-mutagen` | Sobe e diagnostica a sessão do Mutagen, para desenvolvimento com VM remota |
 
 Todo script tem `--help`. `deploy`, `deploy-sync` e `deploy-backup` aceitam `-n`
@@ -606,6 +607,49 @@ O que ele faz em cada projeto:
 > ⚠️ O `deploy-run` precisa existir na VM e **não** pode viajar pelo rsync: com o
 > shim, o `-L` copiaria o próprio shim. Ele é entregue por `push_deploy_run()` no
 > `deploy-sync`. Por isso o instalador mexe no `.rsyncignore`.
+
+---
+
+## `deploy-app-scaffold` — Artefatos de build no repo do app
+
+Entrega `Dockerfile`, `.dockerignore`, `.deploy/` e o workflow de build a partir
+de **um template canônico** (`template/php-app`), para que a imagem possa ser
+buildada pelo próprio repositório do app.
+
+```bash
+./deploy-app-scaffold ~/projetos/api.meuapp.com          # dry-run
+./deploy-app-scaffold ~/projetos --apply                 # varre e instala
+./deploy-app-scaffold . --apply --force                  # atualiza divergentes
+```
+
+### O dilema que ele resolve
+
+Dockerfile **centralizado** no repo de deploy dá um lugar só para editar, mas a
+imagem deixa de ser buildável pelo repo do app — o que a trilha Coolify exige, e
+o que um starter kit precisa para ser distribuível.
+
+Dockerfile **em cada app** resolve isso, mas espalha a manutenção por N repos.
+
+Este script fica no meio: a fonte é única (aqui), o artefato viaja com o app, e
+rodar sem `--apply` responde *quem está defasado*.
+
+| Saída | Significa |
+|---|---|
+| `=` | idêntico ao template |
+| `+` | ausente — `--apply` cria |
+| `≠` | **divergiu** do template — `--apply` preserva; só `--force` sobrescreve |
+
+### Tipos
+
+Detectado sozinho, ou forçado com `--type`:
+
+| Tipo | Quando | Diferença |
+|---|---|---|
+| `api` | sem `vite.config.*` | sem build de frontend |
+| `web` | `package.json` + `vite.config.*` | + `npm run build` |
+
+> ⚠️ O template assume a base `iporto99/php-8-3` — a mesma do dev, o que garante
+> paridade de runtime. É nela que se muda versão de PHP e extensões, não aqui.
 
 ---
 
