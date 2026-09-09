@@ -50,7 +50,7 @@ Ele assume um cenário específico. Se algum item não bate, provavelmente não 
 
 ## Como o ambiente foi desenhado
 
-O documento [`docs/ambiente-de-desenvolvimento.md`](docs/ambiente-de-desenvolvimento.md)
+O documento [`docs/development-environment.md`](docs/development-environment.md)
 registra as decisões por trás destes scripts — por que o `deploy-run dev` usa o
 contexto Docker e o `prd` não, por que o pin de plataforma sai de umas imagens e
 fica em outras, e os doze defeitos que só apareceram ao rodar o fluxo numa
