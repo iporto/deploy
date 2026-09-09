@@ -6,7 +6,9 @@
 #   • NÃO embute .env (o Coolify injeta envs em runtime);
 #   • NÃO roda migrate no boot (é "post-deployment command" no Coolify);
 #   • worker/scheduler são o MESMO image com CMD trocado (horizon / schedule:work).
-FROM iporto99/php-8-3:latest
+# Versão FIXA de propósito. Com :latest, um rebuild meses depois troca o PHP
+# embaixo de quem já estava rodando — e o sintoma aparece longe da causa.
+FROM iporto99/php-8-3:1.5
 
 # nginx é a única peça que a base não traz (no dev ele é um container à parte).
 RUN apt-get update \

@@ -49,7 +49,7 @@ services:
       start_period: 30s
 
   php:
-    image: iporto99/php-8-3:latest
+    image: iporto99/php-8-3:1.5
     container_name: ${APP_PROJECT_NAME}-php
     profiles:
       - "development"
@@ -72,7 +72,7 @@ services:
     restart: unless-stopped
 
   php-api:
-    image: iporto99/php-8-3:latest
+    image: iporto99/php-8-3:1.5
     container_name: ${APP_PROJECT_NAME}-php-api
     profiles:
       - "development"
@@ -90,7 +90,7 @@ services:
     command: sh -c "chown 1000:1000 api.__DOMAIN__ -R && cd api.__DOMAIN__ && ./init-laravel.sh && tail -f /dev/null"
 
   php-console:
-    image: iporto99/php-8-3:latest
+    image: iporto99/php-8-3:1.5
     container_name: ${APP_PROJECT_NAME}-php-console
     profiles:
       - "development"
@@ -125,7 +125,7 @@ services:
       start_period: 30s
 
   env-www:
-    image: iporto99/php-8-3:latest
+    image: iporto99/php-8-3:1.5
     container_name: ${APP_PROJECT_NAME}-env-www
     # Fora do profile "development" de propósito: o www é opcional no kit.
     # Ative com COMPOSE_EXTRA_PROFILES=www no .env.dev — sem editar este arquivo.
@@ -152,7 +152,7 @@ services:
     command: sh -c "chown 1000:1000 www.__DOMAIN__ -R && cd www.__DOMAIN__ && ./init-laravel.sh && npm run dev -- --host 0.0.0.0"
 
   env-platform:
-    image: iporto99/php-8-3:latest
+    image: iporto99/php-8-3:1.5
     container_name: ${APP_PROJECT_NAME}-env-platform
     profiles:
       - "development"

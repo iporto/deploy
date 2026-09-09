@@ -4,7 +4,9 @@
 #   • serve o código direto de /var/www/html (sem rsync);
 #   • NÃO embute .env (Coolify injeta em runtime);
 #   • NÃO roda migrate no boot (o painel normalmente nem migra — a API é a dona do schema).
-FROM iporto99/php-8-3:latest
+# Versão FIXA de propósito. Com :latest, um rebuild meses depois troca o PHP
+# embaixo de quem já estava rodando — e o sintoma aparece longe da causa.
+FROM iporto99/php-8-3:1.5
 
 # nginx é a única peça que a base não traz.
 RUN apt-get update \
