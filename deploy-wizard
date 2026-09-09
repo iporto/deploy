@@ -200,20 +200,32 @@ _env_vazia() {
 _volume_mysql_existe() {
   docker volume ls --format '{{.Name}}' 2>/dev/null | grep -qx 'infra_mysql-data'
 }
-if [[ -f "$ENVI" ]] && _env_vazia MYSQL_ROOT_PASSWORD && _volume_mysql_existe; then
-  _warn "esta máquina já tem uma base de dados, mas a senha do root sumiu"
+# A pergunta certa não é "a senha está preenchida?" e sim "ela ABRE o banco?".
+# Uma senha preenchida e divergente falha igual — e engana mais, porque parece
+# certa no arquivo.
+_senha_root_abre() {
+  local p
+  p="$(grep -E '^MYSQL_ROOT_PASSWORD=' "$ENVI" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
+  [[ -n "$p" ]] || return 1
+  docker ps --filter 'name=^infra-mysql$' --format '{{.Names}}' 2>/dev/null | grep -q . || return 0
+  echo 'SELECT 1;' | docker exec -i -e MYSQL_PWD="$p" infra-mysql mariadb -uroot >/dev/null 2>&1
+}
+if [[ -f "$ENVI" ]] && _volume_mysql_existe && ! _senha_root_abre; then
+  _warn "esta máquina já tem uma base de dados, e a senha do root não abre ela"
   cat <<TXT
 
-  O volume ${BOLD}infra_mysql-data${NC} existe e guarda a senha gravada no primeiro
-  boot. O arquivo de senhas está vazio — provavelmente a biblioteca foi
-  reclonada, porque ${BOLD}infra/.env.dev${NC} não é versionado.
+  O volume ${BOLD}infra_mysql-data${NC} guarda a senha gravada no primeiro boot, e o
+  MySQL nunca mais a relê do arquivo. A que está em ${BOLD}infra/.env.dev${NC} é outra —
+  normalmente porque a biblioteca foi reclonada, já que esse arquivo não é
+  versionado.
 
-  Gerar uma senha nova aqui não muda a que está dentro do volume: a instalação
-  falharia no passo 3, dizendo que a credencial está errada.
+  Seguir daqui falharia no passo 3 com "credencial errada", culpando uma senha
+  que parece certa no arquivo. Os bancos que já existem continuam funcionando:
+  os apps usam usuário próprio, não o root.
 
 TXT
   R=$(_menu "Como seguir?" 1 \
-    "Parar aqui — eu recupero a senha antiga e coloco no arquivo" \
+    "Parar aqui — eu recupero a senha antiga e ponho em infra/.env.dev" \
     "Recriar a base do zero — ${BOLD}APAGA${NC} os bancos locais desta máquina")
   if [[ "$R" == "1" ]]; then
     _info "Coloque MYSQL_ROOT_PASSWORD em ${ENVI} e rode o assistente de novo."

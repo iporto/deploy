@@ -145,6 +145,21 @@ if [[ -f "$INFRA_ENV" ]]; then
   done
   [[ -z "$faltando" ]] && ok "infra/.env.dev preenchido" \
     || fail "infra/.env.dev com senha em branco:${faltando}" "gere com: openssl rand -hex 24"
+
+  # ⚠️ "Preenchida" não é "certa". O MySQL grava a senha do root no VOLUME, no
+  #    primeiro boot, e nunca mais a relê do env. Reclonar a biblioteca apaga o
+  #    .env.dev (ele não é versionado), o run seguinte gera outra senha, e a
+  #    partir daí toda criação de banco falha com "Access denied" — culpando uma
+  #    credencial que parece perfeitamente certa no arquivo.
+  if [[ -z "$faltando" ]] && docker ps --filter 'name=^infra-mysql$' --format '{{.Names}}' 2>/dev/null | grep -q .; then
+    _rp="$(grep -E '^MYSQL_ROOT_PASSWORD=' "$INFRA_ENV" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
+    if echo 'SELECT 1;' | docker exec -i -e MYSQL_PWD="$_rp" infra-mysql mariadb -uroot >/dev/null 2>&1; then
+      ok "a senha do root abre o MySQL"
+    else
+      fail "a senha do root NÃO abre o MySQL" \
+           "o volume guarda a senha do primeiro boot e o arquivo tem outra. Recupere a antiga, ou: deploy-infra reset (apaga os bancos locais)"
+    fi
+  fi
 else
   warn "infra/.env.dev ainda não existe" "criado no primeiro: deploy-infra up"
 fi
