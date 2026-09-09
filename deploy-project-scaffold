@@ -110,6 +110,14 @@ FILES=(
   ".docker/Php/conf/php-ini/php.ini|.docker/Php/conf/php-ini/php.ini"
   ".docker/Php/conf.d/php-fpm.conf|.docker/Php/conf.d/php-fpm.conf"
   ".docker/Php/conf/sites-enabled/zz-docker.conf|.docker/Php/conf/sites-enabled/zz-docker.conf"
+  # O serviço php-console monta estes três. Sem eles o Docker cria diretórios
+  # vazios no lugar dos arquivos, e o container morre com "not a directory".
+  ".docker/Console/init.sh|.docker/Console/init.sh"
+  ".docker/Console/cron.d/crontab|.docker/Console/cron.d/crontab"
+  ".docker/Console/conf.d/supervisord.conf|.docker/Console/conf.d/supervisord.conf"
+  # Só o config do SSH. A chave privada NUNCA entra no template: o diretório é
+  # montado no container, e cada projeto põe a própria chave se precisar.
+  ".docker/Ssh/config|.docker/Ssh/config"
 )
 $WWW && FILES+=(".docker/Nginx/conf/sites-enabled/www.conf|.docker/Nginx/conf/sites-enabled/www.conf")
 

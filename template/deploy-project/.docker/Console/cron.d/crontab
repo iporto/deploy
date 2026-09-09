@@ -1,0 +1,3 @@
+SHELL=/bin/bash
+
+* * * * * /usr/local/bin/php /var/www/html/api.__DOMAIN__/artisan schedule:run > /proc/1/fd/1
