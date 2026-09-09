@@ -17,13 +17,27 @@ RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
 BLUE=$'\033[0;34m'; MAG=$'\033[0;35m'; CYAN=$'\033[0;36m'
 BOLD=$'\033[1m'; DIM=$'\033[2m'; NC=$'\033[0m'
 
+# Largura em COLUNAS de um texto UTF-8.
+# ⚠️ Não use printf '%-54s' nem ${#s} para alinhar: os dois contam BYTES quando o
+#    locale é C — o padrão de VM recém-instalada. Um "ç" ocupa 2 bytes e 1 coluna,
+#    então o título acentuado saía com a borda direita 4 colunas à esquerda.
+#    Contar os bytes que NÃO são continuação UTF-8 (10xxxxxx) dá a largura certa
+#    seja qual for o locale da máquina.
+_larg() { local n; n=$(printf '%s' "$1" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c); echo "$((n))"; }
+
+_box_linha() {
+  local estilo="$1" txt="$2" pad
+  pad=$(( 54 - $(_larg "$txt") )); (( pad < 0 )) && pad=0
+  printf '%s│%s %s%s%s%*s %s│%s\n' "$MAG" "$NC" "$estilo" "$txt" "$NC" "$pad" "" "$MAG" "$NC"
+}
+
 _box() {
   local t="$1" s="$2"
   printf '%s┌────────────────────────────────────────────────────────┐%s\n' "$MAG" "$NC"
-  printf '%s│%s %-54s %s│%s\n' "$MAG" "$NC$BOLD" "$t" "$NC$MAG" "$NC"
+  _box_linha "$BOLD" "$t"
   printf '%s├────────────────────────────────────────────────────────┤%s\n' "$MAG" "$NC"
-  printf '%s│%s %-54s %s│%s\n' "$MAG" "$NC" "$s" "$MAG" "$NC"
-  printf '%s│%s %-54s %s│%s\n' "$MAG" "$NC$DIM" "Ctrl+C a qualquer momento para sair." "$NC$MAG" "$NC"
+  _box_linha "" "$s"
+  _box_linha "$DIM" "Ctrl+C a qualquer momento para sair."
   printf '%s└────────────────────────────────────────────────────────┘%s\n' "$MAG" "$NC"
 }
 _titulo() { printf '\n%s◆ %s%s\n' "$CYAN$BOLD" "$1" "$NC"; }
@@ -83,6 +97,10 @@ _lib_dir() {
 LIB="$(_lib_dir)"
 export PATH="$LIB:$PATH"
 
+# Silencia o rodapé de "próximos passos" dos sub-comandos: quem conduz o roteiro
+# aqui é o assistente, e duas listas numeradas na mesma tela se contradizem.
+export DEPLOY_WIZARD=1
+
 # Assistente sem terminal não tem como perguntar nada. Melhor recusar do que
 # seguir aceitando todos os padrões em silêncio.
 # `-r /dev/tty` não basta: o teste passa mesmo quando o dispositivo não abre.
@@ -116,7 +134,11 @@ KIT_ENCONTRADO=""
 for c in ~/starter-kit ~/kit ./starter-kit; do
   [[ -d "$c/code/api" && -d "$c/code/platform" ]] && { KIT_ENCONTRADO="$(cd "$c" && pwd)"; break; }
 done
-[[ -n "$KIT_ENCONTRADO" ]] && _ok "kit encontrado em ${KIT_ENCONTRADO}" || _warn "kit não encontrado — vou pedir o caminho"
+# Só reporta o fato. O que vai ACONTECER depende do modo escolhido adiante, e
+# aparece na tela de confirmação — prometer aqui "vou pedir o caminho" era falso
+# no modo Rápido, que clona sem perguntar.
+[[ -n "$KIT_ENCONTRADO" ]] && _ok "kit encontrado em ${KIT_ENCONTRADO}" \
+  || _warn "kit não está em ~/starter-kit, ~/kit nem ./starter-kit"
 docker network inspect shared >/dev/null 2>&1 && _ok "rede 'shared' já existe" || _info "rede 'shared' será criada"
 docker ps --filter 'name=^infra-mysql$' --format '{{.Names}}' 2>/dev/null | grep -q . \
   && _ok "infra já está no ar" || _info "infra será iniciada"
@@ -141,7 +163,8 @@ fi
 
 _titulo "Confirmação"
 _info "Produto:   ${BOLD}${DOMINIO}${NC}  (dev: ${SLUG}.test)"
-_info "Kit:       ${KIT}"
+if [[ -d "$KIT/code/api" ]]; then _info "Kit:       ${KIT}"
+else                             _info "Kit:       ${KIT}  ${DIM}(vou clonar do GitHub)${NC}"; fi
 _info "Projeto:   ${PROJETO}"
 _info "Apps:      ${APPS}"
 R=$(_menu "Posso seguir?" 1 "Sim, instalar" "Não, sair")

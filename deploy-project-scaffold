@@ -254,34 +254,41 @@ if $APPLY; then
       || echo "  ${YELLOW}!${NC} rode deploy-app-scaffold ${DIR}/code --apply"
   fi
   echo
-  echo "${GREEN}${BOLD}Pronto.${NC} Próximos passos:"
-  echo
-  n=1
-  if [[ -z "$KIT" ]]; then
-    echo "  ${n}. clonar os apps em ${DIR}/code/ (api.${DOMAIN}, platform.${DOMAIN})"; n=$((n+1))
-    echo "  ${n}. equipar os apps:  deploy-app-scaffold ${DIR}/code --apply"; n=$((n+1))
-  fi
-  if [[ -z "$DB_ENV" ]]; then
-    echo "  ${n}. criar o banco:    deploy-infra createdb ${SLUG}"
-    echo "     e colar as credenciais nos .env.example dos apps"; n=$((n+1))
-  fi
-  # ⚠️ Sem esta linha o navegador não erra: vai para a internet. Sintoma que não
-  #    aponta para a causa — por isso é passo explícito, não nota de rodapé.
-  echo "  ${n}. ${BOLD}editar o /etc/hosts${NC} — a máquina onde roda o NAVEGADOR:"; n=$((n+1))
-  sed "s/^/       /" "${DIR}/hosts" 2>/dev/null | grep -v '^\s*#' | grep -v '^\s*$'
-  echo "  ${n}. subir:            cd ${DIR} && ./deploy-run dev"; n=$((n+1))
-  # ⚠️ `docker compose exec` não funciona aqui: o compose deste projeto chama-se
-  #    docker-compose.dev.yml, que não é nome que o compose procura sozinho — e o
-  #    working_dir do container é /var/www/html, não o diretório do app.
-  echo "  ${n}. migrar:"; n=$((n+1))
-  echo "       docker exec ${SLUG}-php-api sh -c 'cd api.${DOMAIN} && php artisan migrate --force'"
-  echo "  ${n}. gerar o token de acesso:"; n=$((n+1))
-  echo "       docker exec ${SLUG}-php-api sh -c 'cd api.${DOMAIN} && php artisan dev:token'"
-  echo "  ${n}. entrar sem o SSO: use o link que o comando acima imprime"
+  # ⚠️ Sob o assistente esta lista vira RUÍDO: ele conduz os mesmos passos logo
+  # em seguida, com outra numeração. Duas listas "1..5" na mesma tela mandando
+  # coisas diferentes é pior do que nenhuma.
+  if [[ -n "${DEPLOY_WIZARD:-}" ]]; then
+    echo "${GREEN}${BOLD}Pronto.${NC} Projeto gerado em ${DIR}"
+  else
+    echo "${GREEN}${BOLD}Pronto.${NC} Próximos passos:"
+    echo
+    n=1
+    if [[ -z "$KIT" ]]; then
+      echo "  ${n}. clonar os apps em ${DIR}/code/ (api.${DOMAIN}, platform.${DOMAIN})"; n=$((n+1))
+      echo "  ${n}. equipar os apps:  deploy-app-scaffold ${DIR}/code --apply"; n=$((n+1))
+    fi
+    if [[ -z "$DB_ENV" ]]; then
+      echo "  ${n}. criar o banco:    deploy-infra createdb ${SLUG}"
+      echo "     e colar as credenciais nos .env.example dos apps"; n=$((n+1))
+    fi
+    # ⚠️ Sem esta linha o navegador não erra: vai para a internet. Sintoma que não
+    #    aponta para a causa — por isso é passo explícito, não nota de rodapé.
+    echo "  ${n}. ${BOLD}editar o /etc/hosts${NC} — a máquina onde roda o NAVEGADOR:"; n=$((n+1))
+    sed "s/^/       /" "${DIR}/hosts" 2>/dev/null | grep -v '^\s*#' | grep -v '^\s*$'
+    echo "  ${n}. subir:            cd ${DIR} && ./deploy-run dev"; n=$((n+1))
+    # ⚠️ `docker compose exec` não funciona aqui: o compose deste projeto chama-se
+    #    docker-compose.dev.yml, que não é nome que o compose procura sozinho — e o
+    #    working_dir do container é /var/www/html, não o diretório do app.
+    echo "  ${n}. migrar:"; n=$((n+1))
+    echo "       docker exec ${SLUG}-php-api sh -c 'cd api.${DOMAIN} && php artisan migrate --force'"
+    echo "  ${n}. gerar o token de acesso:"; n=$((n+1))
+    echo "       docker exec ${SLUG}-php-api sh -c 'cd api.${DOMAIN} && php artisan dev:token'"
+    echo "  ${n}. entrar sem o SSO: use o link que o comando acima imprime"
 
-  echo
-  echo "  Depois disso: duplique docs/TEMPLATE.md e desenhe o produto."
-  echo "  Produção: ${DIR}/docs/coolify-deploy.md"
+    echo
+    echo "  Depois disso: duplique docs/TEMPLATE.md e desenhe o produto."
+    echo "  Produção: ${DIR}/docs/coolify-deploy.md"
+  fi
 else
   echo; echo "${YELLOW}Rode com --apply para escrever.${NC}"
 fi
