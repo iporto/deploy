@@ -60,8 +60,13 @@ DIR="$(_scripts_dir)/infra"
 [[ -f "$DIR/docker-compose.yml" ]] || { print_error "Compose não encontrado: $DIR"; exit 1; }
 
 command -v docker >/dev/null 2>&1 || { print_error "docker não encontrado"; exit 1; }
-DC=(docker compose); docker compose version >/dev/null 2>&1 || DC=(docker-compose)
-[[ -n "$CONTEXT" ]] && DC=(docker --context "$CONTEXT" compose)
+# ⚠️ --env-file é obrigatório: o docker compose lê `.env` por convenção, e o
+#    arquivo aqui chama-se .env.dev. Sem isto a interpolação falha com
+#    "required variable MYSQL_ROOT_PASSWORD is missing a value" — mesmo com o
+#    valor preenchido no arquivo certo.
+DC=(docker compose --env-file .env.dev)
+docker compose version >/dev/null 2>&1 || DC=(docker-compose --env-file .env.dev)
+[[ -n "$CONTEXT" ]] && DC=(docker --context "$CONTEXT" compose --env-file .env.dev)
 
 # ─── Onde isto vai rodar ─────────────────────────────────────────────────────
 #

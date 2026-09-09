@@ -40,7 +40,7 @@ services:
     container_name: infra-mysql
     environment:
       - TZ=${TZ:-UTC}
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:?defina no .env do dev-infra}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:?defina em infra/.env.dev}
       - MYSQL_ROOT_HOST=%
     command:
       - --default-time-zone=${TZ:-UTC}
@@ -78,7 +78,7 @@ services:
       - --loglevel
       - warning
       - --requirepass
-      - ${REDIS_PASSWORD:?defina no .env do dev-infra}
+      - ${REDIS_PASSWORD:?defina em infra/.env.dev}
     volumes:
       - redis-data:/data
     ports:
