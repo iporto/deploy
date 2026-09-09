@@ -163,6 +163,13 @@ if [[ -n "$PROJ" ]]; then
   for app in "$PROJ"/code/*/; do
     [[ -d "$app" ]] || continue
     nome="$(basename "$app")"
+    # Sem vendor/ o `artisan` nem carrega — e o erro fala de autoload.php, não
+    # de "o composer ainda está rodando". É a pergunta "já posso migrar?".
+    if [[ -f "$app/composer.json" ]]; then
+      [[ -f "$app/vendor/autoload.php" ]] \
+        && ok "${nome}: dependências instaladas" \
+        || warn "${nome}: vendor/ ausente" "o composer ainda está rodando — aguarde antes de migrar"
+    fi
     if [[ -f "$app/.env.example" ]]; then
       dbh="$(grep -E '^DB_HOST=' "$app/.env.example" | head -1 | cut -d= -f2- | tr -d '"' || true)"
       if [[ "$dbh" == "127.0.0.1" || "$dbh" == "localhost" ]]; then

@@ -93,6 +93,20 @@ if [[ -e "$DIR" ]] && $APPLY; then
   echo "${RED}${DIR} já existe — abortando para não sobrescrever.${NC}" >&2; exit 1
 fi
 
+# ⚠️ O destino padrão é relativo ao diretório atual. Quem roda o comando de dentro
+#    do clone da biblioteca acaba com o projeto ali dentro — funciona, mas mistura
+#    o produto com a ferramenta, e o `git status` da biblioteca passa a acusá-lo.
+_abs_dir="$(cd "$(dirname "$DIR")" 2>/dev/null && pwd)/$(basename "$DIR")"
+case "$_abs_dir" in
+  "${LIB}"/*)
+    echo "${YELLOW}⚠️  O destino fica DENTRO do clone da biblioteca:${NC}"
+    echo "     ${_abs_dir}"
+    echo "   O projeto é seu, a biblioteca é ferramenta — convém separá-los."
+    echo "   Rode de outro diretório, ou passe --dir com o caminho desejado."
+    echo
+    ;;
+esac
+
 _render() { sed -e "s/__DOMAIN__/${DOMAIN}/g" -e "s/__DEVDOMAIN__/${DEVDOMAIN}/g" \
                 -e "s/__PROJECT__/${SLUG}/g"  -e "s/__DEVIP__/${DEVIP}/g" "$1"; }
 
@@ -202,8 +216,12 @@ _reescrever_env() {
   # Credenciais do createdb, quando fornecidas.
   if [[ -n "$DB_ENV" ]]; then
     local k v
+    # ⚠️ Só aceita linhas KEY=VALOR. Um arquivo de credenciais poluído — por uma
+    #    mensagem que escapou para o stdout de quem o gerou — produziria uma
+    #    expressão sed inválida, e o erro não diria de onde veio.
     while IFS='=' read -r k v; do
-      [[ -n "$k" ]] && _sed_i "s|^${k}=.*|${k}=${v}|" "$f"
+      [[ "$k" =~ ^[A-Z][A-Z0-9_]*$ ]] || continue
+      _sed_i "s|^${k}=.*|${k}=${v}|" "$f"
     done < "$DB_ENV"
   fi
 }

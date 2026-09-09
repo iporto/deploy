@@ -173,7 +173,9 @@ case "$CMD" in
         --format '{{.State.Health.Status}}' infra-mysql 2>/dev/null
     }
     if [[ "$(_mysql_health)" != "healthy" ]]; then
-      print_info "Aguardando o MySQL aceitar conexão..."
+      # >&2 é obrigatório: com --print-env o stdout é um arquivo de dados, e
+      # qualquer linha informativa aqui vira lixo que o consumidor tenta parsear.
+      print_info "Aguardando o MySQL aceitar conexão..." >&2
       for _i in $(seq 1 60); do
         [[ "$(_mysql_health)" == "healthy" ]] && break
         sleep 2
