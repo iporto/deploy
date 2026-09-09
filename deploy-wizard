@@ -336,10 +336,15 @@ fi
 
 # ─── O que falta ─────────────────────────────────────────────────────────────
 
-# Comando + o que ele faz, em colunas. A largura sai do comando mais longo do
-# bloco, então nada fica desalinhado quando um texto muda de tamanho.
+# Comando + o que ele faz, em colunas.
+# ⚠️ A largura é FIXA e compartilhada por todas as tabelas desta tela. Calcular
+#    o máximo por bloco deixava cada uma começando numa coluna diferente (26,
+#    24, 23) — três listas que não se alinham entre si leem como três coisas
+#    sem relação. Se um comando passar disso, a linha só empurra a descrição;
+#    nada quebra.
+_COL_CMD=21
 _tabela() {   # pares: comando, descrição, comando, descrição...
-  local w=0 i n
+  local w=$_COL_CMD i n
   for (( i=1; i<=$#; i+=2 )); do
     n=$(_larg "${!i}"); (( n > w )) && w=$n
   done
