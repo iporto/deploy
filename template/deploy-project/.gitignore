@@ -11,19 +11,22 @@
 /code/*
 
 # ─── Ambiente ────────────────────────────────────────────────────────────────
-# Os arquivos .env.prd / .env.dev / .envs/*.env.prd SÃO versionados, porém
-# CRIPTOGRAFADOS com SOPS (ver .sops.yaml e docs/secrets-management.md).
-# O que nunca pode ser versionado é texto puro:
+# Env em texto puro NUNCA é versionado:
 .env
 **/.env
 .envs/*.env
-!.envs/*.env.prd
-!.envs/*.env.dev
-!.envs/*.env.stg
 *.env.decrypted
 *.env.plain
 
-# Especial para o site da Aliança
+# ⚠️ As três linhas abaixo abrem exceção para os envs de AMBIENTE — e só fazem
+#    sentido se este projeto usar SOPS, com um .sops.yaml na raiz. Sem SOPS,
+#    elas deixam um .env.prd em TEXTO PURO entrar no git, e o git guarda para
+#    sempre. Descomente somente depois de configurar a criptografia.
+# !.envs/*.env.prd
+# !.envs/*.env.dev
+# !.envs/*.env.stg
+
+# Caches e uploads gerados em runtime
 **/_cache/*
 **/_files/*
 .docker/Watchtower/config.json
