@@ -78,9 +78,19 @@ fi
 disco_kb="$(df -Pk "${PROJ:-$PWD}" 2>/dev/null | awk 'NR==2{print $4}')"
 if [[ -n "$disco_kb" ]]; then
   disco_gb=$(( disco_kb / 1024 / 1024 ))
-  if   [[ $disco_gb -ge 20 ]]; then ok "disco livre: ${disco_gb} GB"
-  elif [[ $disco_gb -ge 12 ]]; then warn "disco livre: ${disco_gb} GB" "o ambiente usa ~11 GB; vai ficar apertado"
-  else fail "disco livre: ${disco_gb} GB" "o ambiente usa ~11 GB — libere espaço ou aumente o disco"; fi
+  # ⚠️ O limite depende de o ambiente JÁ estar instalado. Os ~11 GB são o custo
+  #    de instalar; depois de instalado esse espaço já foi gasto, e exigi-lo de
+  #    novo transforma um ambiente que está rodando bem em "2 bloqueios".
+  #    Instalado, o que importa é folga para imagem nova, log e banco.
+  if docker ps -a --filter 'name=^infra-mysql$' --format '{{.Names}}' 2>/dev/null | grep -q .; then
+    if   [[ $disco_gb -ge 8 ]]; then ok "disco livre: ${disco_gb} GB"
+    elif [[ $disco_gb -ge 3 ]]; then warn "disco livre: ${disco_gb} GB" "dá para trabalhar, mas um build grande enche; olhe o \`docker system df\`"
+    else fail "disco livre: ${disco_gb} GB" "sem folga para build, log e banco — rode \`docker system prune\` ou aumente o disco"; fi
+  else
+    if   [[ $disco_gb -ge 20 ]]; then ok "disco livre: ${disco_gb} GB"
+    elif [[ $disco_gb -ge 12 ]]; then warn "disco livre: ${disco_gb} GB" "instalar o ambiente usa ~11 GB; vai ficar apertado"
+    else fail "disco livre: ${disco_gb} GB" "instalar o ambiente usa ~11 GB — libere espaço ou aumente o disco"; fi
+  fi
 fi
 if [[ "$(uname -s)" == "Linux" ]]; then
   ram_mb=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1024 ))

@@ -32,12 +32,14 @@ _box_linha() {
 }
 
 _box() {
-  local t="$1" s="$2"
+  # A 3ª linha tem padrão, mas pode ser trocada — ou omitida passando "" —
+  # porque "Ctrl+C para sair" só faz sentido na abertura.
+  local t="$1" s="$2" l3="${3-Ctrl+C a qualquer momento para sair.}"
   printf '%s┌────────────────────────────────────────────────────────┐%s\n' "$MAG" "$NC"
   _box_linha "$BOLD" "$t"
   printf '%s├────────────────────────────────────────────────────────┤%s\n' "$MAG" "$NC"
   _box_linha "" "$s"
-  _box_linha "$DIM" "Ctrl+C a qualquer momento para sair."
+  [[ -n "$l3" ]] && _box_linha "$DIM" "$l3"
   printf '%s└────────────────────────────────────────────────────────┘%s\n' "$MAG" "$NC"
 }
 _titulo() { printf '\n%s◆ %s%s\n' "$CYAN$BOLD" "$1" "$NC"; }
@@ -254,17 +256,88 @@ cd "$PROJETO" || exit 1
 _rodar ./deploy-run dev || { _erro "Falha ao subir. Veja: cd ${PROJETO} && ./deploy-run dev"; exit 1; }
 
 # ─── Final ───────────────────────────────────────────────────────────────────
+
+# Preenche até N COLUNAS (não bytes — ver _larg). É o que alinha as duas colunas
+# do resumo mesmo com rótulo acentuado.
+_pad() { local t="$1" n; n=$(( $2 - $(_larg "$t") )); (( n < 0 )) && n=0; printf '%s%*s' "$t" "$n" ""; }
+
+_res() {  # rótulo valor [rótulo2 valor2]
+  local out="  ${DIM}$(_pad "$1" 13)${NC}"
+  if [[ -n "${3:-}" ]]; then
+    out="${out}$(_pad "$2" 34)${DIM}$(_pad "$3" 13)${NC}${4:-}"
+  else
+    out="${out}${2}"   # sem 2ª coluna não há o que alinhar — nada de espaço à toa
+  fi
+  printf '%s\n' "$out"
+}
+
+# `grep -c` já imprime 0 quando não casa nada — e sai com 1. Um `|| echo 0`
+# aqui produziria DUAS linhas "0". O `|| true` só engole o código de saída.
+_conta() { docker ps --filter "name=$1" --format '{{.Names}}' 2>/dev/null | grep -c . || true; }
+
+DISCO="$(df -Pk "$PROJETO" 2>/dev/null | awk 'NR==2{printf "%d GB", $4/1024/1024}')"
+NAPP="$(_conta "^${SLUG}-")"
+NINFRA="$(_conta '^infra-')"
+
 echo
-_box "Instalação concluída" "Seu ambiente está no ar."
+_box "Ambiente pronto" "${DOMINIO} — desenvolvimento local" ""
+echo
+_res "Projeto"   "$PROJETO"                    "Containers"  "${NAPP} do produto"
+_res "Apps"      "${APPS//,/, }"               "Infra"       "${NINFRA} no ar"
+_res "Infra em"  "${LIB}/infra"                "Disco livre" "${DISCO:-?}"
+echo
+_res "Painel"    "http://platform.${SLUG}.test"
+_res "API"       "http://api.${SLUG}.test"
+_res "E-mails"   "http://127.0.0.1:8025"
+_res "Traefik"   "http://127.0.0.1:8080"
+
+# ─── PATH ────────────────────────────────────────────────────────────────────
+# ⚠️ O `export PATH` deste script morre junto com ele. Sem gravar no rc do shell,
+#    TODO comando abaixo falha com "command not found" assim que a pessoa volta
+#    ao prompt — e o sintoma não sugere PATH, sugere instalação quebrada.
+_rc_do_shell() {
+  case "$(basename "${SHELL:-/bin/bash}")" in
+    zsh)  printf '%s\n' "$HOME/.zshrc" ;;
+    bash) if [[ -f "$HOME/.bashrc" ]]; then printf '%s\n' "$HOME/.bashrc"
+          else printf '%s\n' "$HOME/.bash_profile"; fi ;;
+    *)    printf '%s\n' "" ;;
+  esac
+}
+RC="$(_rc_do_shell)"
+LINHA="export PATH=\"${LIB}:\$PATH\""
+
+if [[ -n "$RC" ]] && grep -qF "$LIB" "$RC" 2>/dev/null; then
+  echo
+  _ok "a biblioteca já está no PATH do seu shell"
+else
+  _titulo "Um ajuste no seu shell"
+  cat <<TXT
+
+  Os comandos (${BOLD}deploy-doctor${NC}, ${BOLD}deploy-infra${NC}, …) só existem enquanto este
+  assistente roda. Sem isto, o próximo comando que você digitar responde
+  ${BOLD}command not found${NC} — e o erro parece instalação quebrada, não PATH.
+
+      ${LINHA}
+
+TXT
+  if [[ -n "$RC" ]]; then
+    R=$(_menu "Adicionar ao ${RC##*/}?" 1 "Sim, adicionar (recomendado)" "Não, eu faço à mão")
+    if [[ "$R" == "1" ]]; then
+      printf '\n# Biblioteca de deploy (starter kit)\n%s\n' "$LINHA" >> "$RC"
+      _ok "gravado em ${RC}"
+      _info "Nesta aba, rode uma vez: ${BOLD}source ${RC}${NC}"
+    else
+      _info "Sem problema — cole a linha acima no ${RC}."
+    fi
+  else
+    _info "Cole a linha acima no arquivo de inicialização do seu shell."
+  fi
+fi
+
+# ─── O que falta ─────────────────────────────────────────────────────────────
+_titulo "Falta um passo — as dependências ainda instalam"
 cat <<TXT
 
-${BOLD}${GREEN}Onde ficou tudo${NC}
-  Projeto:    ${PROJETO}
-  Apps:       ${PROJETO}/code/
-  Infra:      ${LIB}/infra/  (compartilhada por todos os seus produtos)
-  Brief:      ${PROJETO}/docs/TEMPLATE.md
-
-${BOLD}${YELLOW}Falta um passo — as dependências ainda estão instalando${NC}
   Confira quando terminarem:
       deploy-doctor ${PROJETO}
 
@@ -272,16 +345,25 @@ ${BOLD}${YELLOW}Falta um passo — as dependências ainda estão instalando${NC}
       docker exec ${SLUG}-php-api sh -c 'cd api.${DOMINIO} && php artisan migrate --force'
       docker exec ${SLUG}-php-api sh -c 'cd api.${DOMINIO} && php artisan dev:token'
 
-  O último comando imprime um link pronto para entrar no painel, sem conta no Spelt.
+  O último imprime um link pronto para entrar no painel, sem conta no Spelt.
+TXT
 
-${BOLD}${CYAN}No dia a dia${NC}
-  cd ${PROJETO} && ./deploy-run dev        subir o projeto
-  ./deploy-run dev stop                     parar
-  deploy-infra status                       o que está no ar
-  deploy-doctor ${PROJETO}                  diagnosticar
+_titulo "No dia a dia"
+cat <<TXT
 
-${BOLD}Construir o produto${NC}
-  Duplique ${PROJETO}/docs/TEMPLATE.md e desenhe o seu SaaS. É aí que
-  aparecem as necessidades reais — e a conta no Spelt.
+  cd ${PROJETO} && ./deploy-run dev     subir o projeto
+  ./deploy-run dev stop                 parar
+  deploy-infra status                   o que está no ar
+  deploy-doctor ${PROJETO}              diagnosticar
+TXT
+
+_titulo "Construir o produto"
+cat <<TXT
+
+  Duplique ${PROJETO}/docs/TEMPLATE.md e desenhe o seu SaaS. É aí que aparecem
+  as necessidades reais — e a conta no Spelt.
+
+  Vai chamar alguém para o projeto? ${PROJETO}/docs/onboarding.md tem o
+  caminho de quem entra depois: são vários repositórios, um por app.
 
 TXT
