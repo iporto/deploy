@@ -113,6 +113,7 @@ EOF
 | `deploy-backup` | Baixa backup dos bancos do servidor, com retenção |
 | `envedit` | Edita envs criptografados com SOPS + age, encapsulando as flags que o formato exige |
 | `harden-vm` | Fecha a superfície de rede da VM: ufw, `DOCKER-USER`, fail2ban, SSH por chave |
+| `deploy-doctor` | Verifica se a máquina consegue rodar o ambiente — rode **antes** de tudo |
 | `deploy-audit` | Varre vários projetos procurando env em texto puro, porta exposta, `chmod 777` |
 | `deploy-token-check` | Diagnostica o token de acesso ao registry |
 | `deploy-shim-install` | Instala os verbos num projeto (acima) |
@@ -685,6 +686,25 @@ Detectado sozinho, ou forçado com `--type`:
 
 > ⚠️ O template assume a base `iporto99/php-8-3` — a mesma do dev, o que garante
 > paridade de runtime. É nela que se muda versão de PHP e extensões, não aqui.
+
+---
+
+## `deploy-doctor` — Verificação de pré-voo
+
+```bash
+./deploy-doctor                    # a máquina e a infra
+./deploy-doctor ~/deploy.acme.com  # + o que o projeto precisa
+```
+
+Feito para rodar **antes de instalar qualquer coisa**. Verifica ferramentas,
+daemon e contexto Docker, disco, RAM, portas, estado da infra, senhas em branco,
+entradas do `/etc/hosts` e o `DB_HOST` dos apps.
+
+Só lê. Sai com `1` se houver bloqueio, `0` com avisos.
+
+> Com **daemon remoto**, disco e portas são medidos nesta máquina, não no
+> destino. O doctor avisa em vez de dar um veredito falso — rode-o também do
+> outro lado.
 
 ---
 
