@@ -165,9 +165,14 @@ if [[ -n "$PROJ" ]]; then
     nome="$(basename "$app")"
     if [[ -f "$app/.env.example" ]]; then
       dbh="$(grep -E '^DB_HOST=' "$app/.env.example" | head -1 | cut -d= -f2- | tr -d '"' || true)"
-      [[ "$dbh" == "127.0.0.1" || "$dbh" == "localhost" ]] \
-        && fail "${nome}: DB_HOST=${dbh}" "dentro do container isso é o próprio container — deveria ser infra-mysql" \
-        || ok "${nome}: DB_HOST=${dbh:-<vazio>}"
+      if [[ "$dbh" == "127.0.0.1" || "$dbh" == "localhost" ]]; then
+        fail "${nome}: DB_HOST=${dbh}" "dentro do container isso é o próprio container — deveria ser infra-mysql"
+      elif [[ -z "$dbh" ]]; then
+        # Nem todo app fala com o banco: o platform consome a API, não o MySQL.
+        ok "${nome}: não declara DB_HOST (não acessa o banco direto)"
+      else
+        ok "${nome}: DB_HOST=${dbh}"
+      fi
     fi
   done
 fi
