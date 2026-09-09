@@ -151,7 +151,10 @@ case "$CMD" in
       print_info  "Use minúsculas, números e _, começando por letra (até 31 chars)."
       exit 2
     fi
-    root_pass="$(grep -E '^MYSQL_ROOT_PASSWORD=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
+    # Tira as aspas: o template usa KEY="valor" por convenção, e sem remover
+    # as aspas a senha vai com elas para o MySQL e a autenticação falha — com
+    # uma mensagem que culpa a credencial, e ela parece certa no arquivo.
+    root_pass="$(grep -E '^MYSQL_ROOT_PASSWORD=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
     [[ -z "$DB_PASS" ]] && DB_PASS="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)"
 
     if ! docker ${CONTEXT:+--context "$CONTEXT"} ps --filter 'name=^infra-mysql$' --format '{{.Names}}' 2>/dev/null | grep -q infra-mysql; then
