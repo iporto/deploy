@@ -62,7 +62,19 @@ else
 
   arch="$(docker info --format '{{.Architecture}}' 2>/dev/null)"
   case "$arch" in
-    aarch64|arm64) warn "arquitetura ${arch}" "as imagens de terceiros rodam emuladas — mais lentas, porém estáveis" ;;
+    aarch64|arm64)
+      # ⚠️ Não basta avisar que "roda emulado". Sem emulação instalada, imagem
+      #    amd64 não roda DEVAGAR — ela não roda: todo container morre com
+      #    `exec format error`, e a mensagem não menciona arquitetura em
+      #    momento nenhum. A diferença entre "lento" e "não funciona" só se
+      #    descobre executando.
+      if docker run --rm --platform linux/amd64 alpine:3 true >/dev/null 2>&1; then
+        warn "arquitetura ${arch}" "imagem amd64 roda emulada — mais lenta, porém estável"
+      else
+        fail "arquitetura ${arch} sem emulação de amd64" \
+             "todo container de imagem amd64 vai falhar com 'exec format error'. No Docker Desktop, ative Rosetta em Settings → General; no Linux: docker run --privileged --rm tonistiigi/binfmt --install amd64"
+      fi
+      ;;
     *) ok "arquitetura ${arch}" ;;
   esac
 fi

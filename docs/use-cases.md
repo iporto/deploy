@@ -297,6 +297,33 @@ imagem é liberada por promoção de tag.
 
 ## Quando algo não sobe
 
+### `exec format error` em todo container
+
+É arquitetura, não permissão. O kernel não consegue executar o binário — imagem
+`amd64` numa máquina `arm64` (Apple Silicon) sem emulação, ou o contrário.
+
+```bash
+docker info --format 'host: {{.Architecture}}'
+docker image inspect <imagem> --format 'imagem: {{.Architecture}}/{{.Os}}'
+
+# a emulação existe?
+docker run --rm --platform linux/amd64 alpine:3 uname -m
+```
+
+Se o último falhar, é isso. **No Docker Desktop**, ative *Rosetta for x86/amd64
+emulation* em Settings → General. **No Linux**:
+
+```bash
+docker run --privileged --rm tonistiigi/binfmt --install amd64
+```
+
+> [!NOTE]
+> O `deploy-doctor` testa isso — não pergunta a arquitetura, executa um
+> container `amd64` e vê se ele roda. É a única forma de separar "vai ficar
+> lento" de "não vai funcionar".
+
+
+
 ```bash
 deploy-doctor .            # no projeto: hosts, envs, deps, binds
 deploy-infra status        # a base compartilhada
