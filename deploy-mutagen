@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+################################################################################
+# deploy-mutagen — as sessões de sincronia deste projeto, de uma vez
+#
+# Com daemon Docker REMOTO, os bind mounts leem o filesystem da VM. A
+# configuração chega lá pelo deploy-sync; o CÓDIGO dos apps chega pelo Mutagen,
+# contínuo. Sem ele, code/<app> não existe na VM e o container sobe sobre um
+# diretório vazio — ver a guarda de bind mount no deploy-run.
+#
+# Cada app tem o próprio mutagen.yml em code/<app>/. Este comando age sobre
+# todos de uma vez, em vez de entrar num por um.
+#
+# Uso:  ./deploy-mutagen [status|start|stop]
+#   status  (padrão)  o que cada app está fazendo, e o que está fora do lugar
+#   start             inicia as sessões que ainda não existem
+#   stop              termina as sessões deste projeto
+################################################################################
+
+case "${1:-}" in -h|--help) sed -n '4,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+
+RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; NC=$'\033[0m'
+
+CMD="${1:-status}"
+
+command -v mutagen >/dev/null 2>&1 || {
+  echo "${RED}mutagen não encontrado.${NC}" >&2
+  echo "  Instale:  brew install mutagen-io/mutagen/mutagen" >&2
+  exit 127
+}
+[[ -d code ]] || {
+  echo "${RED}Sem diretório code/ aqui.${NC} Rode na raiz do projeto de deploy." >&2
+  exit 1
+}
+
+# Com daemon local o código já está onde o Docker lê — sincronizar não tem alvo.
+# Não bloqueia: alguém pode manter sessões por outro motivo.
+case "$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" in
+  unix://*|npipe://*)
+    echo "${YELLOW}Aviso:${NC} o daemon Docker é LOCAL — o Mutagen não é necessário aqui."
+    echo "${DIM}  Ele existe para o caso do daemon remoto, onde os binds leem a VM.${NC}"
+    echo
+    ;;
+esac
+
+# Sessões ativas: nome → caminho do alpha. É o que revela sessão com o nome
+# certo apontando para o projeto ERRADO.
+ATIVAS="$(mutagen sync list --template '{{range .}}{{.Name}}|{{.Status}}|{{.Alpha.Path}}{{"\n"}}{{end}}' 2>/dev/null || true)"
+
+_nome_declarado() { grep -oE '^  [a-z][a-z0-9_-]+:' "$1" 2>/dev/null | grep -v defaults | head -1 | tr -d ' :'; }
+_sessao()         { printf '%s\n' "$ATIVAS" | awk -F'|' -v n="$1" '$1==n {print; exit}'; }
+
+################################################################################
+titulo() { printf '\n%s%s%s\n' "$BOLD" "$1" "$NC"; }
+AVISOS=0
+
+titulo "Apps em code/"
+for d in code/*/; do
+  [[ -d "$d" ]] || continue
+  app="$(basename "$d")"
+  if [[ ! -f "$d/mutagen.yml" ]]; then
+    printf '  %s—%s %-34s %ssem mutagen.yml%s\n' "$DIM" "$NC" "$app" "$DIM" "$NC"
+    continue
+  fi
+  nome="$(_nome_declarado "$d/mutagen.yml")"
+  linha="$(_sessao "$nome")"
+  status="$(printf '%s' "$linha" | cut -d'|' -f2)"
+  alpha="$(printf '%s' "$linha" | cut -d'|' -f3)"
+  aqui="$(cd "$d" && pwd)"
+
+  if [[ -z "$linha" ]]; then
+    printf '  %s○%s %-34s %s%s%s  %sparada%s\n' "$YELLOW" "$NC" "$app" "$DIM" "$nome" "$NC" "$YELLOW" "$NC"
+    AVISOS=$((AVISOS+1))
+  elif [[ "$alpha" != "$aqui" ]]; then
+    # ⚠️ O namespace do Mutagen é GLOBAL. Dois projetos declarando o mesmo nome
+    #    disputam a mesma sessão, e quem perde sincroniza o diretório do outro —
+    #    em silêncio, porque a sessão existe e está "Watching".
+    printf '  %s✗%s %-34s %s%s%s  %sSINCRONIZA OUTRO DIRETÓRIO%s\n' "$RED" "$NC" "$app" "$DIM" "$nome" "$NC" "$RED" "$NC"
+    printf '      %salpha ativo: %s%s\n' "$DIM" "$alpha" "$NC"
+    AVISOS=$((AVISOS+1))
+  else
+    printf '  %s✓%s %-34s %s%s%s  %s\n' "$GREEN" "$NC" "$app" "$DIM" "$nome" "$NC" "$status"
+  fi
+done
+
+case "$CMD" in
+  status)
+    if [[ $AVISOS -gt 0 ]]; then
+      printf '\n%s%d ponto(s) de atenção.%s  Para iniciar as paradas: ./deploy-mutagen start\n' "$YELLOW" "$AVISOS" "$NC"
+    else
+      printf '\n%sTudo sincronizando.%s\n' "$GREEN" "$NC"
+    fi
+    ;;
+
+  start)
+    titulo "Iniciando"
+    for d in code/*/; do
+      [[ -f "$d/mutagen.yml" ]] || continue
+      app="$(basename "$d")"; nome="$(_nome_declarado "$d/mutagen.yml")"
+      linha="$(_sessao "$nome")"
+      if [[ -n "$linha" ]]; then
+        alpha="$(printf '%s' "$linha" | cut -d'|' -f3)"; aqui="$(cd "$d" && pwd)"
+        if [[ "$alpha" == "$aqui" ]]; then
+          printf '  %s=%s %-34s já ativa\n' "$BLUE" "$NC" "$app"
+        else
+          # ⚠️ "já ativa" aqui seria mentira perigosa: a sessão existe, mas com
+          #    o alpha em OUTRO diretório. Pular calado deixaria este app sem
+          #    sincronia nenhuma, com o comando reportando sucesso.
+          printf '  %s✗%s %-34s nome %s%s%s já usado por outro diretório\n' "$RED" "$NC" "$app" "$BOLD" "$nome" "$NC"
+          printf '      %sativo em: %s%s\n' "$DIM" "$alpha" "$NC"
+          printf '      %srenomeie a sessão em %smutagen.yml%s — o namespace do Mutagen é global\n' "$DIM" "$d" "$NC"
+        fi
+        continue
+      fi
+      # O lock é o que o `mutagen project` usa para saber que já iniciou. Se ele
+      # existe mas a sessão não, o projeto foi encerrado por fora — remover o
+      # lock é o que destrava, e é seguro: ele só guarda o id da sessão.
+      if [[ -f "$d/mutagen.yml.lock" ]]; then
+        printf '  %s!%s %-34s lock órfão — removendo\n' "$YELLOW" "$NC" "$app"
+        rm -f "$d/mutagen.yml.lock"
+      fi
+      if ( cd "$d" && mutagen project start >/dev/null 2>&1 ); then
+        printf '  %s+%s %-34s iniciada (%s)\n' "$GREEN" "$NC" "$app" "$nome"
+      else
+        printf '  %s✗%s %-34s falhou — veja: cd %s && mutagen project start\n' "$RED" "$NC" "$app" "$d"
+      fi
+    done
+    ;;
+
+  stop)
+    titulo "Terminando"
+    for d in code/*/; do
+      [[ -f "$d/mutagen.yml" ]] || continue
+      app="$(basename "$d")"; nome="$(_nome_declarado "$d/mutagen.yml")"
+      linha="$(_sessao "$nome")"; alpha="$(printf '%s' "$linha" | cut -d'|' -f3)"
+      aqui="$(cd "$d" && pwd)"
+      if [[ -z "$linha" ]]; then
+        printf '  %s=%s %-34s já parada\n' "$BLUE" "$NC" "$app"; continue
+      fi
+      # ⚠️ Não termina sessão cujo alpha aponta para OUTRO diretório: o nome pode
+      #    colidir com o de outro projeto, e derrubar a sincronia dele seria um
+      #    efeito colateral silencioso.
+      if [[ "$alpha" != "$aqui" ]]; then
+        printf '  %s✗%s %-34s NÃO terminada — a sessão é de %s\n' "$RED" "$NC" "$app" "$alpha"
+        continue
+      fi
+      if ( cd "$d" && mutagen project terminate >/dev/null 2>&1 ); then
+        printf '  %s-%s %-34s terminada\n' "$GREEN" "$NC" "$app"
+      else
+        mutagen sync terminate "$nome" >/dev/null 2>&1 \
+          && printf '  %s-%s %-34s terminada (pela sessão)\n' "$GREEN" "$NC" "$app" \
+          || printf '  %s✗%s %-34s falhou\n' "$RED" "$NC" "$app"
+      fi
+    done
+    ;;
+
+  *) echo "${RED}Comando desconhecido: ${CMD}${NC}" >&2
+     echo "Use: status | start | stop" >&2; exit 2 ;;
+esac

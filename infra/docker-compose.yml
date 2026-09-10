@@ -1,3 +1,10 @@
+# ⚠️ O nome do projeto compose fica FIXO aqui, e não herdado do nome do
+#    diretório. Sem esta linha, mover ou renomear a pasta muda o prefixo dos
+#    volumes — infra_mysql-data viraria outro nome, os bancos ficariam órfãos e
+#    os containers subiriam vazios, sem nada no erro apontando para a causa.
+#    Os containers têm container_name explícito e não dependem disto.
+name: infra
+
 # Infra de desenvolvimento — sobe UMA vez por máquina (ou por contexto Docker).
 #
 # Cria a rede `shared` e os serviços que todo projeto espera encontrar nela.
