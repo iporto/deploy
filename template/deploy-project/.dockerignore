@@ -27,6 +27,13 @@ app/.github
 app/.env
 app/.env.*
 
+# ⚠️ Chaves do Passport. O Laravel as cria em storage/, mas há projeto que as
+#    tem na RAIZ do app — e foi assim que uma oauth-private.key chegou a uma
+#    imagem publicada. Os dois caminhos, para não depender de qual o projeto usa.
+app/oauth-*.key
+app/storage/oauth-*.key
+app/*.pem
+
 # Regenerados no build (composer install / npm ci).
 app/vendor
 app/node_modules
