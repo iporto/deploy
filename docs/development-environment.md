@@ -8,7 +8,8 @@
 > por contexto é conveniência de quem mantém, não requisito.
 > **Escopo:** o desenho do ambiente de desenvolvimento desta biblioteca e as
 > decisões que o produziram.
-> Não cobre a trilha de produção (Coolify), documentada no repositório do produto.
+> Não cobre a trilha de produção — ela está em
+> [`production-pipeline.md`](production-pipeline.md), nesta mesma pasta.
 
 ---
 
@@ -77,7 +78,16 @@ tentativa.
 | Camadas 1 e 2 | **vivem na biblioteca**, com o comando `deploy-infra` | Sobe **uma vez por máquina**, não uma por produto — é infra de estação de trabalho, não de projeto. A biblioteca já é pública e já é a dependência comum de todo projeto |
 | A topologia interna de quem mantém | **fora do desenho do kit** | Segue existindo à parte; o kit não a referencia nem depende dela |
 | Escopo do kit público | **Apps + gerador** | O kit fica enxuto; o `deploy.<projeto>` nasce com o nome do produto do adotante |
-| Verbos no projeto gerado | **Só `deploy-run` e `deploy-sync`** | Os outros 6 pertencem ao aparato antigo e não fazem nada na trilha Coolify |
+| Verbos no projeto gerado | **`deploy-run`, `deploy-sync` e `deploy-mutagen`** | Os outros pertencem ao aparato antigo e não fazem nada na trilha Coolify. O `deploy-mutagen` entra mesmo com o alvo padrão sendo Docker local: quem aponta para daemon remoto precisa dele, e com daemon local ele mesmo avisa que não é necessário |
+
+### Revisão de 2026-09-10 — onde o build acontece
+
+| Tema | Decisão | Por quê |
+|---|---|---|
+| Build da imagem | **centralizado no repositório de deploy** | Foi revertido: a versão anterior punha o Dockerfile em cada repo de app. Isso tinha entrado junto com a decisão do Coolify **como se fosse consequência dela**, e não era — no Coolify cada app é do tipo *Docker Image*, ele puxa imagem pronta e não se importa com quem construiu. Centralizado, um Dockerfile muda todos os apps num commit, e o contexto pode ser inspecionado antes do push |
+| Credencial entre repositórios | **GitHub App**, não PAT | Centralizado precisa cruzar repositórios nos dois sentidos, e o `GITHUB_TOKEN` nunca sai do próprio repo. A escolha real era PAT pessoal ou App: o App emite token de 1 h, escopado, e não morre com uma pessoa |
+| Tag que o destino observa | **`:prd`**, ao lado das imutáveis | O Coolify guarda uma `imagem:tag` fixa e re-puxa no webhook — sem ponteiro móvel seria preciso reconfigurá-lo a cada release. Não é `:latest` porque `:latest` é o que o Docker puxa sem se pedir tag |
+| Varredura de segredo | **no contexto E na imagem pronta** | A do contexto confere a entrada; a da imagem confere a saída, e é a que pega um `COPY` largo demais. As duas juntas barraram, na estreia real, um `APP_KEY` de produção e uma chave privada do Passport que estavam versionados |
 
 ---
 

@@ -32,6 +32,7 @@ Um punhado de scripts que você lê em uma tarde e um `.env` por ambiente.
 - [Pré-requisitos](#pré-requisitos) · [Instalação](#instalação) · [Fixar uma versão](#fixar-uma-versão)
 - [Os scripts](#os-scripts) — a tabela de tudo, em uma tela
 - [Casos de uso](docs/use-cases.md) — cenários prontos, com os comandos na ordem
+- [A esteira de produção](docs/production-pipeline.md) — do push à imagem no ar, e o GitHub App
 - [Aviso](#aviso) — leia antes de rodar em algo que te importa
 - [Como atualizar os scripts](#como-atualizar-os-scripts)
 - [Documentação](#documentação) · [Licença](#licença)
@@ -245,6 +246,7 @@ Executado **no servidor remoto** (ou localmente em dev). Lê o `.env` do diretó
 | Comando | Descrição |
 |---------|-----------|
 | *(nenhum)* | Sobe ou atualiza todos os serviços (`pull` + `up`) |
+| `status` | Mostra o que está no ar **neste projeto** — sem container, avisa e diz como subir |
 | `stop` | Para e remove todos os containers do projeto |
 | `--fresh` / `-f` | Destrói volumes e recria tudo do zero *(pede confirmação)* |
 | `<nome-do-serviço>` | Rebuilda apenas o serviço especificado |
@@ -254,6 +256,7 @@ Executado **no servidor remoto** (ou localmente em dev). Lê o `.env` do diretó
 | Flag | Descrição |
 |------|-----------|
 | `--no-pull`, `-P` | Não executa pull de imagens (usa cache local) |
+| `--no-sync` | Não sincroniza antes de subir. Só tem efeito em `dev` com daemon remoto, que é quando o sync automático acontece |
 | `--help`, `-h` | Exibe a ajuda |
 
 ### Exemplos
@@ -979,6 +982,7 @@ Não há registry, organização nem nome de projeto escritos no script.
 | | |
 |---|---|
 | [`DEPLOY-README.md`](DEPLOY-README.md) | **O modelo, não os comandos.** Os dois canais que não se misturam, os quatro verbos e o caminho que um segredo percorre. Leia antes de mexer no desenho do deploy. |
+| [`docs/production-pipeline.md`](docs/production-pipeline.md) | **Como o código vira imagem e chega ao ar.** O build centralizado, as três tags, o GitHub App que liga os dois repositórios — com o passo a passo de criação — e a tabela de sintomas de quando falha. |
 | [`docs/use-cases.md`](docs/use-cases.md) | **Sete cenários com os comandos na ordem.** Projeto seu sem o kit, SaaS a partir do kit, segundo produto na mesma máquina, entrar num projeto que já existe, desenvolver contra uma VM. Comece por aqui se souber o que quer fazer mas não por onde. |
 | [`docs/development-environment.md`](docs/development-environment.md) | O registro das decisões: por que o `deploy-run dev` usa o contexto Docker e o `prd` não, e os doze defeitos que só apareceram rodando o fluxo numa máquina limpa. |
 | [Starter Kit](https://github.com/Codijo/starter-kit.spelt.com.br) | Um SaaS em Laravel que sobe com esta biblioteca — o consumidor de referência dela. Bom lugar para ver os scripts em uso real. |

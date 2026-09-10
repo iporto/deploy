@@ -21,7 +21,8 @@
 | [4](#4-já-tenho-o-código-falta-a-base) | Já tenho o `code/` com meus apps e falta o Docker em volta |
 | [5](#5-entrei-num-projeto-que-já-existe) | Alguém me passou um projeto e preciso subir |
 | [6](#6-desenvolvo-contra-uma-vm) | Meu Docker roda numa VM, não na minha máquina |
-| [7](#7-projeto-da-trilha-antiga) | Projeto com Traefik + Watchtower, deploy por `./deploy prd` |
+| [7](#7-levar-o-produto-ao-ar-coolify) | Meu produto está pronto e preciso publicá-lo |
+| [8](#8-projeto-da-trilha-antiga) | Projeto com Traefik + Watchtower, deploy por `./deploy prd` |
 
 ---
 
@@ -218,6 +219,11 @@ O `./deploy-run dev` chama o `deploy-sync` sozinho quando o daemon é remoto —
 mounts existem: sem o Mutagen rodando, `code/<app>` não existe lá, o Docker cria
 um diretório vazio no lugar e o container quebra depois, longe da causa.
 
+> [!TIP]
+> Antes de subir, o `./deploy-run dev` confere **na VM** se as origens dos bind
+> mounts existem. Sem o Mutagen rodando, `code/<app>` não existe lá, o Docker
+> cria um diretório vazio no lugar e o container quebra depois — longe da causa.
+
 > [!WARNING]
 > **O namespace de sessão do Mutagen é global.** Dois projetos que declarem o
 > mesmo nome no `mutagen.yml` disputam a mesma sessão, e quem perde sincroniza
@@ -226,7 +232,40 @@ um diretório vazio no lugar e o container quebra depois, longe da causa.
 
 ---
 
-## 7. Projeto da trilha antiga
+## 7. Levar o produto ao ar (Coolify)
+
+**Você tem:** o ambiente de dev rodando e o produto tomando forma.
+**Você quer:** o app construído e publicado a cada push.
+
+O build é **centralizado no repositório de deploy**: o repo do app só versiona e
+avisa. Os Dockerfiles ficam em `.docker/Code/<app>/`, aqui.
+
+```bash
+# no repo de cada app, uma vez
+deploy-scaffold-app ./code --apply       # instala o notify-deploy.yml
+```
+
+O resto é configuração, não comando: criar o **GitHub App** que liga os dois
+repositórios, guardar os segredos e apontar o Coolify para a tag `:prd`.
+
+> [!IMPORTANT]
+> O passo a passo completo — permissões do App, quais segredos vão em qual
+> repositório, e a tabela de sintomas quando falha — está em
+> [`production-pipeline.md`](production-pipeline.md). Não tente adivinhar as
+> permissões: `Contents: Read and write`, e o Webhook **desmarcado**.
+
+Depois disso, o ciclo é só `git push` no repo do app.
+
+Para voltar atrás, redispare o build com o ref antigo — nunca fixe uma `sha-` na
+configuração do Coolify:
+
+```bash
+gh workflow run build.<app>.yml -R org/deploy.acme.com -f code_ref=<sha-antiga>
+```
+
+---
+
+## 8. Projeto da trilha antiga
 
 **Você tem:** um projeto com `docker-compose.prd.yml`, Traefik e Watchtower.
 **Você quer:** operar produção.
