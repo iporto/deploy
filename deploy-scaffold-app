@@ -2,14 +2,14 @@
 set -uo pipefail
 
 ################################################################################
-# deploy-scaffold-app — instala/atualiza os artefatos de build num repo de app
+# deploy-scaffold-app — instala/atualiza o workflow de aviso num repo de app
 #
-# Entrega Dockerfile, .dockerignore, .deploy/ e o workflow de build a partir de
-# UM template canônico (template/php-app), para que a imagem possa ser buildada
-# pelo próprio repo do app — requisito da trilha Coolify.
+# O build é CENTRALIZADO: os Dockerfiles vivem no repositório de deploy, que
+# constrói a imagem e dispara o Coolify. O repositório do app só versiona o
+# commit e avisa, por repository_dispatch.
 #
-# Resolve o dilema "centralizado vs distribuído": a fonte é única (aqui), mas o
-# artefato viaja com o app. Rodar sem --apply mostra quem está defasado.
+# Por isso aqui entra um arquivo só — o notify-deploy.yml. Rodar sem --apply
+# mostra quais apps estão defasados em relação ao template.
 #
 # Tipos:  api  → sem build de frontend
 #         web  → + npm run build (platform, www)
@@ -73,13 +73,14 @@ for app in "${APPS[@]}"; do
   fi
 
   # destino → origem no template
+  # O repo do app NÃO constrói imagem. Ele versiona e avisa o repo de deploy,
+  # que é dono dos Dockerfiles — por isso aqui entra um arquivo só.
+  #
+  # O tipo (api/web) continua sendo detectado porque ele diz qual variante de
+  # Dockerfile o repo de deploy precisa usar para este app. Não muda o que é
+  # instalado aqui.
   declare -a PAIRS=(
-    "Dockerfile|${TPL}/Dockerfile.$( [[ $t == web ]] && echo web || echo api )"
-    ".dockerignore|${TPL}/.dockerignore"
-    ".deploy/nginx.conf|${TPL}/.deploy/nginx.conf"
-    ".deploy/supervisord.conf|${TPL}/.deploy/supervisord.conf"
-    ".deploy/entrypoint.sh|${TPL}/.deploy/entrypoint.sh"
-    ".github/workflows/build.yml|${TPL}/.github/workflows/build.yml"
+    ".github/workflows/notify-deploy.yml|${TPL}/.github/workflows/notify-deploy.yml"
   )
 
   lines=(); n_new=0; n_drift=0
@@ -114,7 +115,7 @@ echo
 echo "${BOLD}Apps: ${TOT}${NC}  •  em dia: ${OK}  •  com arquivo faltando: ${NEW}  •  divergentes: ${DRIFT}"
 if $APPLY && [[ $NEW -gt 0 ]]; then
   echo
-  echo "${BOLD}Próximo passo${NC} — a imagem já pode ser buildada pelo próprio repo do app."
+  echo "${BOLD}Próximo passo${NC} — o app avisa; quem constrói é o repo de deploy."
   echo "  Commite os artefatos e configure o auto-deploy: veja docs/coolify-deploy.md"
 fi
 if ! $APPLY; then

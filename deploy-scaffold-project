@@ -135,6 +135,8 @@ FILES=(
   ".env.dev.example|.env.dev.example"
   ".gitignore|.gitignore"
   ".rsyncignore|.rsyncignore"
+  # O contexto de build passou a ser ESTE repositório — ele precisa do seu.
+  ".dockerignore|.dockerignore"
   "hosts|hosts"
   "docs/coolify-deploy.md|docs/coolify-deploy.md"
   ".docker/Nginx/conf/nginx.conf|.docker/Nginx/conf/nginx.conf"
@@ -294,6 +296,51 @@ _iniciar_repos() {
   done
 }
 
+# Artefatos de build do lado do DEPLOY.
+#
+# O build é centralizado: o Dockerfile de cada app mora aqui, não no repo do app.
+# O repo do app só avisa (repository_dispatch) e este repositório constrói.
+#
+# ⚠️ Um diretório por app, e não um Dockerfile só, porque `api` e `web` diferem
+#    (web roda npm run build) e porque o COPY dos confs precisa de caminho fixo —
+#    ARG em COPY não resolve de forma portátil entre versões do BuildKit.
+_artefatos_de_build() {
+  local app slug variante dst
+  echo
+  echo "${BOLD}Build centralizado${NC}"
+  mkdir -p "$DIR/.github/workflows"
+  if [[ -f "$TPL/.github/workflows/_build-image.yml" ]]; then
+    cp "$TPL/.github/workflows/_build-image.yml" "$DIR/.github/workflows/_build-image.yml"
+    echo "  ${GREEN}+${NC} .github/workflows/_build-image.yml   (constrói e avisa o Coolify)"
+  fi
+  for slug in $(echo "$APPS" | tr ',' ' '); do
+    app="${slug}.${DOMAIN}"
+    # api sem build de frontend; platform e www com npm run build.
+    variante=api; [[ "$slug" != "api" ]] && variante=web
+    dst="$DIR/.docker/Code/$app"
+    mkdir -p "$dst"
+    _render_app "$TPL/.docker/Code/Dockerfile.${variante}" "$app" "$slug" > "$dst/Dockerfile"
+    for f in entrypoint.sh nginx.conf supervisord.conf; do
+      [[ -f "$TPL/.docker/Code/$f" ]] && cp "$TPL/.docker/Code/$f" "$dst/$f"
+    done
+    chmod 755 "$dst/entrypoint.sh" 2>/dev/null || true
+    echo "  ${GREEN}+${NC} .docker/Code/${app}/   (Dockerfile ${variante} + confs)"
+
+    _render_app "$TPL/.github/workflows/build-app.yml" "$app" "$slug" \
+      > "$DIR/.github/workflows/build.${slug}.yml"
+    echo "  ${GREEN}+${NC} .github/workflows/build.${slug}.yml"
+  done
+}
+
+# Como o _render, mais os marcadores que variam POR APP.
+_render_app() {
+  local origem="$1" app="$2" slug="$3" up
+  up="$(printf '%s' "$slug" | tr '[:lower:]' '[:upper:]')"
+  _render "$origem" | sed -e "s/__APPSLUG_UP__/${up}/g" \
+                          -e "s/__APPSLUG__/${slug}/g" \
+                          -e "s/__APP__/${app}/g"
+}
+
 # Runbook do SEGUNDO momento: alguém que pega o projeto andando. Gerado com os
 # nomes reais porque um passo a passo genérico obriga a traduzir cada linha, e é
 # aí que se erra.
@@ -411,6 +458,7 @@ if $APPLY; then
       || echo "  ${YELLOW}!${NC} rode deploy-scaffold-app ${DIR}/code --apply"
   fi
 
+  _artefatos_de_build
   _escrever_onboarding
 
   # Por último: o git init tem que enxergar tudo o que os passos acima criaram.

@@ -1,3 +1,9 @@
+# ⚠️ CONTEXTO: este Dockerfile é construído a partir da RAIZ DO REPO DE DEPLOY,
+#    não da raiz do app. O workflow copia o código do app para `app/` dentro do
+#    contexto (`cp -R code docker/app`), por isso todo COPY do código leva o
+#    prefixo `app/`. Construir com o contexto errado falha em `composer.json`.
+#
+#    __APP__ é substituído pelo scaffold pelo diretório do app.
 # Imagem de PRODUÇÃO da API (deploy via Coolify).
 # Base = a MESMA imagem custom do dev → paridade de runtime (PHP 8.3 + extensões).
 #
@@ -18,21 +24,21 @@ RUN apt-get update \
 WORKDIR /var/www/html
 
 # 1) Dependências primeiro — camada cacheada enquanto composer.* não muda.
-COPY composer.json composer.lock ./
+COPY app/composer.json app/composer.lock ./
 RUN composer install --no-dev --prefer-dist --no-progress --no-interaction \
       --no-scripts --optimize-autoloader
 
 # 2) Código da aplicação (vendor/.git/.env/bootstrap-cache ficam de fora via .dockerignore).
-COPY . .
+COPY app/ .
 RUN mkdir -p bootstrap/cache storage/framework/cache/data storage/framework/sessions \
              storage/framework/views storage/logs \
  && composer dump-autoload --optimize --no-dev \
  && rm -rf .git .github tests
 
 # 3) Runtime: nginx + supervisor + entrypoint.
-COPY .deploy/nginx.conf       /etc/nginx/conf.d/default.conf
-COPY .deploy/supervisord.conf /etc/supervisord.conf
-COPY .deploy/entrypoint.sh    /usr/local/bin/entrypoint
+COPY .docker/Code/__APP__/nginx.conf       /etc/nginx/conf.d/default.conf
+COPY .docker/Code/__APP__/supervisord.conf /etc/supervisord.conf
+COPY .docker/Code/__APP__/entrypoint.sh    /usr/local/bin/entrypoint
 RUN rm -f /etc/nginx/sites-enabled/default \
  && chmod +x /usr/local/bin/entrypoint
 

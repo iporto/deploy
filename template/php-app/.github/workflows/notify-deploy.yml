@@ -1,0 +1,100 @@
+# Versiona este commit e avisa o repositório de deploy.
+#
+# Este repositório NÃO constrói imagem. Os Dockerfiles vivem no repo de deploy,
+# em .docker/Code/, que é quem builda, publica e dispara o Coolify.
+#
+# Segredos necessários (de organização, configurados uma vez):
+#   • DEPLOY_APP_ID / DEPLOY_APP_PRIVATE_KEY   GitHub App com contents:write no
+#                                              repositório de deploy
+#   • DEPLOY_REPO                              org/deploy.meuprojeto.com
+name: Versionar e avisar o deploy
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: notify-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version-and-notify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Calcular a próxima versão
+        id: semver
+        uses: ietf-tools/semver-action@v1
+        with:
+          token: ${{ github.token }}
+          branch: main
+          noVersionBumpBehavior: 'patch'
+
+      - name: Criar e publicar a tag
+        if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag ${{ steps.semver.outputs.next }}
+          git push origin ${{ steps.semver.outputs.next }}
+
+      - name: Criar o Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.semver.outputs.next }}
+          name: ${{ steps.semver.outputs.next }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Token de App, não PAT: vive 1 hora, é escopado aos repositórios onde o
+      # App foi instalado e não morre com uma pessoa. O GITHUB_TOKEN não serve
+      # aqui — ele nunca cruza repositório.
+      - name: Emitir token do GitHub App
+        id: app-token
+        if: github.event_name == 'push'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.DEPLOY_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Avisar o repositório de deploy
+        if: github.event_name == 'push'
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+          DEPLOY_REPO: ${{ secrets.DEPLOY_REPO }}
+        run: |
+          # O client_payload carrega o SHA EXATO deste commit. Sem ele o repo de
+          # deploy daria checkout em 'main', e dois pushes próximos fariam o
+          # segundo build sobrescrever o primeiro com o mesmo código — a imagem
+          # não corresponderia ao commit que a disparou.
+          app="${GITHUB_REPOSITORY##*/}"; app="${app%%.*}"
+          payload=$(jq -nc \
+            --arg sha     "${GITHUB_SHA}" \
+            --arg version "${{ steps.semver.outputs.next }}" \
+            --arg actor   "${GITHUB_ACTOR}" \
+            --arg type    "new-code-${app}" \
+            '{event_type:$type, client_payload:{sha:$sha, version:$version, actor:$actor}}')
+
+          code=$(curl -s -o resp.json -w "%{http_code}" -L -X POST \
+            "https://api.github.com/repos/${DEPLOY_REPO}/dispatches" \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H 'Content-Type: application/json' \
+            --data "$payload")
+
+          if [ "$code" != "204" ]; then
+            echo "::error::Falha ao avisar ${DEPLOY_REPO} (HTTP $code)"
+            cat resp.json
+            exit 1
+          fi
+          echo "Avisado: ${GITHUB_SHA} (${{ steps.semver.outputs.next }})"

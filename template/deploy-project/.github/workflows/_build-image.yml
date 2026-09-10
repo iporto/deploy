@@ -1,0 +1,185 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Workflow reutilizável: constrói e publica UMA imagem de app no GHCR e avisa o
+# Coolify.
+#
+# Este repositório é o dono dos Dockerfiles. Os repositórios de app só avisam
+# que há código novo (repository_dispatch) — o build acontece aqui.
+#
+# Por que centralizado: um Dockerfile por app, num lugar só, muda todos de uma
+# vez. E o contexto de build pode ser inspecionado antes do push — é o que
+# permite a varredura de segredo em texto puro logo abaixo.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Build image (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: 'Diretório do app em .docker/Code (ex.: api.meuprojeto.com)'
+        required: true
+        type: string
+      code_repo:
+        description: 'Repositório do código (org/nome)'
+        required: true
+        type: string
+      code_ref:
+        description: 'Ref/SHA do código a construir'
+        required: false
+        default: 'main'
+        type: string
+      version:
+        description: 'Versão SemVer vinda do repo do código'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      DEPLOY_APP_ID:          { required: true }
+      DEPLOY_APP_PRIVATE_KEY: { required: true }
+      COOLIFY_URL:            { required: false }
+      COOLIFY_TOKEN:          { required: false }
+      COOLIFY_APP_UUID:       { required: false }
+      DOCKERHUB_USERNAME:     { required: false }
+      DOCKERHUB_TOKEN:        { required: false }
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # ⚠️ Token de App, não PAT. Vive 1 hora, é escopado aos repositórios onde o
+      #    App foi instalado e não morre junto com uma pessoa.
+      - name: Emitir token do GitHub App
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.DEPLOY_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Checkout do código da aplicação
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.code_repo }}
+          ref: ${{ inputs.code_ref }}
+          fetch-depth: 0            # o git describe da versão precisa das tags
+          token: ${{ steps.app-token.outputs.token }}
+          path: code
+
+      - name: Checkout deste repositório
+        uses: actions/checkout@v7
+        with:
+          path: deploy
+
+      - name: Resolver versão e SHA
+        id: meta
+        working-directory: code
+        env:
+          # Por env, não interpolado: valor vindo de payload externo não entra
+          # no corpo do script.
+          IN_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION="${IN_VERSION}"
+          if [ -z "$VERSION" ]; then
+            VERSION="$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo 'v0.0.0')"
+          fi
+          echo "version=${VERSION}"                        >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(git rev-parse --short HEAD)"    >> "$GITHUB_OUTPUT"
+
+      - name: Nome da imagem
+        id: img
+        run: |
+          # deploy.meuprojeto.com + app api.meuprojeto.com
+          #   → ghcr.io/<owner>/meuprojeto-api
+          repo="${GITHUB_REPOSITORY##*/}"          # deploy.meuprojeto.com
+          rest="${repo#*.}"; project="${rest%%.*}" # meuprojeto
+          app="${{ inputs.app }}"; app="${app%%.*}"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "image=ghcr.io/${owner}/${project}-${app}" >> "$GITHUB_OUTPUT"
+
+      - name: Preparar contexto de build
+        run: |
+          # O Dockerfile deste repo faz COPY app/… — o código precisa entrar no
+          # contexto. .git e .github ficam de fora da imagem.
+          cp -R code deploy/app
+          rm -rf deploy/app/.git deploy/app/.github
+
+          # ⚠️ Última barreira antes de o segredo virar camada pública de imagem.
+          #    Uma vez publicada, a camada não se desfaz — apagar a tag não basta.
+          leaked=$(find deploy/app -maxdepth 2 \( -name '.env' -o -name '.env.*' \) -print0 2>/dev/null \
+            | xargs -0 -r awk -F= '
+                /^(APP_KEY|[A-Z0-9_]*(PASSWORD|SECRET|TOKEN|SALT|DSN)[A-Z0-9_]*|[A-Z0-9_]+_KEY)=/ {
+                  v=$2; gsub(/^"|"$/,"",v);
+                  if (v != "" && $1 !~ /^VITE_/) print "  " FILENAME ": " $1
+                }' || true)
+          if [ -n "$leaked" ]; then
+            echo "::error::Segredo em texto puro no contexto de build. Abortando."
+            echo "$leaked"
+            exit 1
+          fi
+          echo "Nenhum segredo em texto puro no contexto."
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login no GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login no Docker Hub (base privada — opcional)
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build e push
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy
+          file: deploy/.docker/Code/${{ inputs.app }}/Dockerfile
+          platforms: linux/amd64
+          push: true
+          # ❌ Sem :latest. Tag móvel é o que impede saber o que está em produção.
+          tags: |
+            ${{ steps.img.outputs.image }}:sha-${{ steps.meta.outputs.short_sha }}
+            ${{ steps.img.outputs.image }}:${{ steps.meta.outputs.version }}
+          # ⚠️ Sem o label `source` o GHCR cria o pacote SOLTO na organização, sem
+          #    vínculo com repositório — e um token escopado por repo não o alcança.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Disparar deploy no Coolify
+        if: ${{ secrets.COOLIFY_APP_UUID != '' }}
+        env:
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          COOLIFY_APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
+        run: |
+          # Aceita vários UUIDs separados por vírgula: a imagem da API serve
+          # api + worker + scheduler, e os três recriam no mesmo push.
+          for uuid in ${COOLIFY_APP_UUID//,/ }; do
+            echo "Deploy → $uuid"
+            curl --fail --silent --show-error -L -X POST \
+              "${COOLIFY_URL}/api/v1/deploy?uuid=${uuid}&force=false" \
+              -H "Authorization: Bearer ${COOLIFY_TOKEN}"
+            echo
+          done
+
+      - name: Resumo
+        run: |
+          {
+            echo "### ${{ inputs.app }} — ${{ steps.meta.outputs.version }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Imagem | \`${{ steps.img.outputs.image }}\` |"
+            echo "| Tags | \`sha-${{ steps.meta.outputs.short_sha }}\`, \`${{ steps.meta.outputs.version }}\` |"
+            echo "| Código | \`${{ inputs.code_repo }}@${{ inputs.code_ref }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

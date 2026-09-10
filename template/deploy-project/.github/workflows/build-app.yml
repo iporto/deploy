@@ -1,0 +1,48 @@
+# Recebe o aviso do repositório de __APPSLUG__ e constrói a imagem.
+#
+# O repo do código não builda: ele versiona e dispara. O Dockerfile mora aqui,
+# em .docker/Code/__APP__/.
+name: Build [ __APPSLUG__ ]
+
+run-name: "Build __APPSLUG__ ${{ github.event.client_payload.version || github.event.inputs.code_ref || 'main' }}"
+
+on:
+  repository_dispatch:
+    types: [new-code-__APPSLUG__]
+  workflow_dispatch:
+    inputs:
+      code_ref:
+        description: 'Ref/SHA do código (padrão: main)'
+        required: false
+        default: 'main'
+
+# ⚠️ As permissões do CHAMADOR limitam o workflow chamado: um reusable não pode
+#    pedir mais do que quem o chama concede. Sem este bloco, o _build-image.yml
+#    pede `packages: write`, não recebe, e o run morre em startup_failure — antes
+#    de qualquer passo rodar, sem log para consultar.
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-__APPSLUG__
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/_build-image.yml
+    with:
+      app: __APP__
+      # O repo do código mora na mesma org deste repositório — não precisa de
+      # configuração à parte.
+      code_repo: ${{ github.repository_owner }}/__APP__
+      code_ref: ${{ github.event.inputs.code_ref || github.event.client_payload.sha || 'main' }}
+      version: ${{ github.event.client_payload.version || '' }}
+    secrets:
+      DEPLOY_APP_ID:          ${{ secrets.DEPLOY_APP_ID }}
+      DEPLOY_APP_PRIVATE_KEY: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
+      COOLIFY_URL:            ${{ secrets.COOLIFY_URL }}
+      COOLIFY_TOKEN:          ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_APP_UUID:       ${{ secrets.COOLIFY_UUID___APPSLUG_UP__ }}
+      DOCKERHUB_USERNAME:     ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN:        ${{ secrets.DOCKERHUB_TOKEN }}

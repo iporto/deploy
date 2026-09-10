@@ -1,0 +1,45 @@
+# Contexto de build do repositório de DEPLOY.
+#
+# ⚠️ O contexto aqui é a raiz deste repositório, com o código do app copiado
+#    para `app/` pelo workflow. Duas coisas precisam SOBRAR: `app/` (o código) e
+#    `.docker/Code/` (Dockerfile e confs). Todo o resto é peso ou risco.
+
+# ─── Do repositório de deploy ────────────────────────────────────────────────
+.git
+.github
+.gitignore
+.rsyncignore
+code/                 # checkouts locais de dev — o build usa app/, não isto
+docs/
+backups/
+*.md
+hosts
+docker-compose*.yml
+
+# ⚠️ NUNCA embutir env na imagem — o Coolify injeta em runtime.
+.env
+.env.*
+.envs/
+
+# ─── Do código do app, já dentro de app/ ─────────────────────────────────────
+app/.git
+app/.github
+app/.env
+app/.env.*
+
+# Regenerados no build (composer install / npm ci).
+app/vendor
+app/node_modules
+
+# Marcadores e artefatos de desenvolvimento.
+app/public/hot
+app/storage/logs/*.log
+app/storage/framework/cache/*
+app/storage/framework/sessions/*
+app/storage/framework/views/*
+
+# ⚠️ Cache de bootstrap do DEV (packages.php/services.php) referencia pacotes de
+#    dev ausentes no --no-dev → package:discover quebra. Regenerado no build.
+app/bootstrap/cache/*
+
+app/tests
