@@ -59,14 +59,16 @@ deploy-scaffold-project acme.com --dir . --apply
 build:
 
 ```bash
-deploy-scaffold-app ./code --apply              # Dockerfile, .deploy/, workflow
+deploy-scaffold-app ./code --apply              # workflow de aviso ao deploy
 deploy-infra createdb acme                      # banco + usuário + senha
 sudo sh -c 'cat hosts >> /etc/hosts'            # na máquina do NAVEGADOR
 ./deploy-run dev
 ```
 
 > [!NOTE]
-> O `deploy-scaffold-app` reconhece um app por `composer.json` **e** `artisan`.
+> O `deploy-scaffold-app` instala só o `notify-deploy.yml`: quem constrói a
+> imagem é este repositório de deploy, com os Dockerfiles de `.docker/Code/`.
+> Ele reconhece um app por `composer.json` **e** `artisan`.
 > Um diretório sem os dois é ignorado — rode-o depois de clonar os apps de
 > verdade, não sobre diretórios vazios.
 

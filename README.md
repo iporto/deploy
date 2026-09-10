@@ -189,7 +189,7 @@ EOF
 | `deploy-audit` | Varre vários projetos procurando env em texto puro, porta exposta, `chmod 777` |
 | `deploy-token-check` | Diagnostica o token de acesso ao registry |
 | `deploy-shim-install` | Instala os verbos num projeto (acima) |
-| `deploy-scaffold-app` | Instala os artefatos de build (Dockerfile, `.deploy/`, workflow) num repo de app |
+| `deploy-scaffold-app` | Instala o workflow de aviso num repo de app — o build fica no repo de deploy |
 | `deploy-scaffold-project` | Cria o repo `deploy.<projeto>` de um SaaS novo: ambiente de dev + runbook |
 
 Todo script tem `--help`. `deploy`, `deploy-sync` e `deploy-backup` aceitam `-n`
@@ -764,11 +764,14 @@ são as duas metades do mesmo desenho — este cuida do **dev**, aquele cuida do
 
 ---
 
-## `deploy-scaffold-app` — Artefatos de build no repo do app
+## `deploy-scaffold-app` — Workflow de aviso no repo do app
 
-Entrega `Dockerfile`, `.dockerignore`, `.deploy/` e o workflow de build a partir
-de **um template canônico** (`template/php-app`), para que a imagem possa ser
-buildada pelo próprio repositório do app.
+O build é **centralizado** no repositório de deploy, que é dono dos
+Dockerfiles (`.docker/Code/<app>/`). O repositório do app não constrói nada:
+ele versiona o commit e avisa, por `repository_dispatch`.
+
+Este comando instala lá esse único workflow, a partir de
+`template/php-app/.github/workflows/notify-deploy.yml`.
 
 ```bash
 ./deploy-scaffold-app ~/projetos/api.meuapp.com          # dry-run

@@ -9,8 +9,9 @@ set -uo pipefail
 # docker-compose.prd.yml, servers.yml nem Watchtower — a esteira de deploy do
 # aparato antigo não participa desta trilha.
 #
-# Os artefatos de build (Dockerfile, .deploy/, workflow) NÃO ficam aqui: vivem
-# em cada repo de app, instalados pelo deploy-scaffold-app.
+# O build é CENTRALIZADO: os Dockerfiles ficam aqui, em .docker/Code/<app>/, e
+# este repositório constrói a imagem. O repo do app só avisa — o
+# deploy-scaffold-app instala lá o workflow de aviso.
 #
 # Dry-run por padrão — exige --apply para escrever.
 #
@@ -361,7 +362,8 @@ _escrever_onboarding() {
     echo
     echo "Este produto são **$(( $(ls -d "$DIR/code"/*/ 2>/dev/null | wc -l | tr -d ' ') + 1 )) repositórios**: este, com a infraestrutura, e um por app."
     echo "O \`.gitignore\` daqui ignora \`/code/*\` de propósito — os apps não moram"
-    echo "aqui dentro, cada um tem o seu repositório e constrói a própria imagem."
+    echo "aqui dentro — cada um tem o seu repositório. Quem constrói as imagens"
+    echo "é este repositório de deploy, com os Dockerfiles de .docker/Code/."
     echo
     echo '```'
     echo "deploy.${DOMAIN}/          ← este repositório (compose, nginx, envs, hosts)"
@@ -451,7 +453,7 @@ if $APPLY; then
     echo "  ${GREEN}+${NC} docs/TEMPLATE.md"
   fi
 
-  # Artefatos de build nos apps copiados (Dockerfile, .deploy/, workflow).
+  # Workflow de aviso nos apps copiados. O build fica neste repositório.
   if [[ -n "$KIT" && -x "${LIB}/deploy-scaffold-app" ]]; then
     "${LIB}/deploy-scaffold-app" "$DIR/code" --apply >/dev/null 2>&1 \
       && echo "  ${GREEN}+${NC} artefatos de build nos apps" \
@@ -505,7 +507,7 @@ if $APPLY; then
       [[ -d "$_a" ]] || continue
       echo "       cd ${DIR}/code/$(basename "$_a") && git remote add origin <url> && git push -u origin main"
     done
-    echo "     Cada app constrói a própria imagem a partir do próprio repositório."
+    echo "     O build das imagens é deste repositório; os apps só avisam."
     echo "     Quem entrar no projeto depois segue ${DIR}/docs/onboarding.md."
     echo
     echo "  Depois disso: duplique docs/TEMPLATE.md e desenhe o produto."
