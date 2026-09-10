@@ -209,6 +209,33 @@ if [[ -n "$PROJ" ]]; then
         && ok "${nome}: dependências instaladas" \
         || warn "${nome}: vendor/ ausente" "o composer ainda está rodando — aguarde antes de migrar"
     fi
+    # ⚠️ Segredo VERSIONADO num env do app. É a armadilha que mais se repete:
+    #    o .gitignore traz `.env`, que casa SÓ o arquivo com esse nome exato —
+    #    não pega .env.default.prd, .env.production nem .env.local. Foi assim
+    #    que APP_KEY de produção entrou em dois repositórios diferentes.
+    #
+    #    A esteira de build barra isso, mas só quando você já tentou publicar.
+    #    Aqui aparece antes, e sem custo.
+    if [[ -d "$app/.git" ]] && command -v git >/dev/null 2>&1; then
+      vazando=""
+      while IFS= read -r envf; do
+        [[ -n "$envf" ]] || continue
+        n="$(git -C "$app" show "HEAD:$envf" 2>/dev/null \
+             | grep -cE '^(APP_KEY|[A-Z0-9_]*(PASSWORD|SECRET|TOKEN|SALT|DSN)[A-Z0-9_]*|[A-Z0-9_]+_KEY)=.+' || true)"
+        [[ "${n:-0}" -gt 0 ]] && vazando="${vazando} ${envf}(${n})"
+      done < <(git -C "$app" ls-files 2>/dev/null | grep -E '(^|/)\.env' | grep -v '\.example$' || true)
+
+      if [[ -n "$vazando" ]]; then
+        fail "${nome}: segredo versionado em env:${vazando}" \
+             "o build recusa publicar. Tire do índice, esvazie os valores no .example e ROTACIONE — o histórico mantém"
+      fi
+      # A chave privada do Passport nasce em storage/ por padrão, mas há projeto
+      # que a tem na raiz — e aí o `.gitignore` padrão do Laravel não cobre.
+      chaves="$(git -C "$app" ls-files 2>/dev/null | grep -E 'oauth-private\.key$|\.pem$' | tr '\n' ' ' || true)"
+      [[ -n "$chaves" ]] && fail "${nome}: chave privada versionada: ${chaves}" \
+             "ela vira camada de imagem pública. Tire do índice e rotacione"
+    fi
+
     if [[ -f "$app/.env.example" ]]; then
       dbh="$(grep -E '^DB_HOST=' "$app/.env.example" | head -1 | cut -d= -f2- | tr -d '"' || true)"
       if [[ "$dbh" == "127.0.0.1" || "$dbh" == "localhost" ]]; then

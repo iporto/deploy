@@ -159,13 +159,25 @@ FILES=(
 )
 $WWW && FILES+=(".docker/Nginx/conf/sites-enabled/www.conf|.docker/Nginx/conf/sites-enabled/www.conf")
 
-PRESERVADOS=0
+PRESERVADOS=0; DOCKERIGNORE_RUIM=false
 for pair in "${FILES[@]}"; do
   src="${pair%%|*}"; dst="${pair#*|}"
   [[ -f "$TPL/$src" ]] || { echo "  ${RED}!${NC} ausente no template: $src"; continue; }
   # ⚠️ Em --adopt, arquivo existente é do usuário: pode ter sido ajustado à mão.
   #    Sobrescrever aqui apagaria o ajuste sem avisar.
   if $ADOPT && [[ -f "$DIR/$dst" ]]; then
+    # ⚠️ Exceção à regra de preservar: um .dockerignore escrito quando o
+    #    contexto de build era a RAIZ DO APP costuma excluir `.docker`. Ali isso
+    #    estava certo. Aqui o contexto é ESTE repositório e o Dockerfile faz
+    #    COPY .docker/Code/<app>/… — a mesma linha apaga os arquivos de que ele
+    #    precisa, e o build morre em "failed to compute cache key", que não diz
+    #    nada sobre .dockerignore. Preservar em silêncio seria entregar a
+    #    armadilha montada.
+    if [[ "$dst" == ".dockerignore" ]] && grep -qE '^\.docker/?$' "$DIR/$dst" 2>/dev/null; then
+      echo "  ${YELLOW}!${NC} ${dst}   (preservado, mas ${BOLD}exclui .docker${NC} — incompatível)"
+      DOCKERIGNORE_RUIM=true
+      PRESERVADOS=$(( PRESERVADOS + 1 )); continue
+    fi
     echo "  ${BLUE}=${NC} ${dst}   (já existia — preservado)"
     PRESERVADOS=$(( PRESERVADOS + 1 )); continue
   fi
@@ -458,6 +470,20 @@ if $APPLY; then
     "${LIB}/deploy-scaffold-app" "$DIR/code" --apply >/dev/null 2>&1 \
       && echo "  ${GREEN}+${NC} artefatos de build nos apps" \
       || echo "  ${YELLOW}!${NC} rode deploy-scaffold-app ${DIR}/code --apply"
+  fi
+
+  if $DOCKERIGNORE_RUIM; then
+    echo
+    echo "${YELLOW}${BOLD}Atenção — o .dockerignore deste projeto exclui \`.docker\`.${NC}"
+    echo "  Ele foi escrito para quando o build rodava a partir da raiz do APP."
+    echo "  Agora o contexto é ESTE repositório, e o Dockerfile faz"
+    echo "  ${BOLD}COPY .docker/Code/<app>/…${NC} — a exclusão apaga o que ele copia."
+    echo
+    echo "  O build falharia com ${BOLD}failed to compute cache key … not found${NC},"
+    echo "  que não menciona o .dockerignore em momento nenhum."
+    echo
+    echo "  Compare com o modelo e ajuste:"
+    echo "      diff .dockerignore ${TPL}/.dockerignore"
   fi
 
   _artefatos_de_build
