@@ -29,6 +29,28 @@ jobs:
         with:
           fetch-depth: 0
 
+      # ⚠️ O fallbackTag NÃO basta sozinho. Ele define a base do cálculo, mas a
+      #    ação ainda chama a API de comparação com ela — e num repositório sem
+      #    tag nenhuma o `compare/v0.0.0...main` responde 404, porque v0.0.0 não
+      #    existe como ref. O fallback só funciona quando a tag existe de fato.
+      #
+      #    Criar a tag no PRIMEIRO commit resolve os dois lados: ela passa a
+      #    existir, e a comparação cobre o histórico inteiro — então o primeiro
+      #    release considera todos os commits, não só os do último push.
+      - name: Garantir a tag inicial
+        if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "$(git tag -l)" ]; then
+            echo "Já há tag: $(git tag -l | tail -1)"
+            exit 0
+          fi
+          raiz="$(git rev-list --max-parents=0 HEAD | head -1)"
+          echo "Repositório sem tags — criando v0.0.0 em ${raiz}"
+          git tag v0.0.0 "$raiz"
+          git push origin v0.0.0
+
       - name: Calcular a próxima versão
         id: semver
         uses: ietf-tools/semver-action@v1
