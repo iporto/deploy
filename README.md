@@ -39,7 +39,7 @@ Um punhado de scripts que você lê em uma tarde e um `.env` por ambiente.
 
 - [`deploy`](#deploy--deploy-multi-servidor) · [`deploy-sync`](#deploy-sync--sincronizador-com-servidor-remoto) · [`deploy-run`](#deploy-run--gerenciador-de-containers) · [`deploy-promote`](#deploy-promote--liberar-imagem-em-produção)
 - [`deploy-backup`](#deploy-backup--backup-por-container) · [`envedit`](#envedit--envs-criptografados-sops--age) · [`harden-vm`](#harden-vm--fecha-a-superfície-de-rede-da-vm)
-- [`deploy-wizard`](#deploy-wizard--assistente-interativo) · [`deploy-doctor`](#deploy-doctor--verificação-de-pré-voo) · [`deploy-audit`](#deploy-audit--auditoria-multi-projeto) · [`deploy-token-check`](#deploy-token-check--valida-o-personal_access_token)
+- [`deploy-wizard`](#deploy-wizard--assistente-interativo) · [`deploy-doctor`](#deploy-doctor--verificação-de-pré-voo) · [`deploy-mutagen`](#deploy-mutagen--sincronia-dos-apps) · [`deploy-audit`](#deploy-audit--auditoria-multi-projeto) · [`deploy-token-check`](#deploy-token-check--valida-o-personal_access_token)
 - [`deploy-shim-install`](#deploy-shim-install--instala-o-shim-de-bootstrap) · [`deploy-scaffold-app`](#deploy-scaffold-app--artefatos-de-build-no-repo-do-app) · [`deploy-scaffold-project`](#deploy-scaffold-project--cria-o-repo-de-um-projeto-novo)
 
 ---
@@ -184,6 +184,7 @@ EOF
 | `harden-vm` | Fecha a superfície de rede da VM: ufw, `DOCKER-USER`, fail2ban, SSH por chave |
 | `deploy-wizard` | Assistente interativo — guia a instalação do começo ao fim |
 | `deploy-doctor` | Verifica se a máquina consegue rodar o ambiente — rode **antes** de tudo |
+| `deploy-mutagen` | As sessões de sincronia de todos os apps do projeto, de uma vez |
 | `deploy-audit` | Varre vários projetos procurando env em texto puro, porta exposta, `chmod 777` |
 | `deploy-token-check` | Diagnostica o token de acesso ao registry |
 | `deploy-shim-install` | Instala os verbos num projeto (acima) |
@@ -839,6 +840,37 @@ Só lê. Sai com `1` se houver bloqueio, `0` com avisos.
 > Com **daemon remoto**, disco e portas são medidos nesta máquina, não no
 > destino. O doctor avisa em vez de dar um veredito falso — rode-o também do
 > outro lado.
+
+---
+
+## `deploy-mutagen` — Sincronia dos apps
+
+Só faz sentido com **daemon Docker remoto**. Nesse modo os bind mounts leem o
+filesystem da VM: a configuração chega lá pelo `deploy-sync`, e o **código dos
+apps** pelo Mutagen, contínuo. Cada app tem o próprio `mutagen.yml` em
+`code/<app>/` — este comando age sobre todos de uma vez.
+
+```bash
+./deploy-mutagen            # status (padrão)
+./deploy-mutagen start      # inicia as que estão paradas
+./deploy-mutagen stop       # termina as deste projeto
+```
+
+```
+Apps em code/
+  ✓ api.spelt.com.br      spelt-api    Watching
+  ○ www.spelt.com.br      spelt-www    parada
+  — starter-kit…          sem mutagen.yml
+```
+
+> [!WARNING]
+> **O namespace de sessão do Mutagen é global.** Dois projetos que declarem o
+> mesmo nome disputam a mesma sessão, e quem perde passa a sincronizar o
+> diretório do outro — em silêncio, porque a sessão existe e está `Watching`.
+>
+> O `status` compara o *alpha* ativo com o diretório do app e denuncia quando
+> divergem. O `start` recusa iniciar sobre um nome tomado, e o `stop` nunca
+> termina sessão que aponta para fora do projeto.
 
 ---
 
