@@ -18,6 +18,6 @@
 keys.txt
 
 # Exceção: o template do gerador precisa versionar o .example (sem valores).
-# Sem isto o deploy-project-scaffold nasce quebrado em qualquer clone.
+# Sem isto o deploy-scaffold-project nasce quebrado em qualquer clone.
 !template/deploy-project/.env.dev.example
 !infra/.env.dev.example

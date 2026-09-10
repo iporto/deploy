@@ -167,7 +167,7 @@ fi
 # ─── Verificações do projeto ─────────────────────────────────────────────────
 if [[ -n "$PROJ" ]]; then
   titulo "Projeto: $(basename "$PROJ")"
-  [[ -f "$PROJ/.env.dev" ]] && ok ".env.dev presente" || fail ".env.dev ausente" "rode o deploy-project-scaffold"
+  [[ -f "$PROJ/.env.dev" ]] && ok ".env.dev presente" || fail ".env.dev ausente" "rode o deploy-scaffold-project"
   [[ -f "$PROJ/docker-compose.dev.yml" ]] && ok "docker-compose.dev.yml presente" || fail "compose de dev ausente"
 
   if [[ -f "$PROJ/hosts" ]]; then

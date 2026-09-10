@@ -265,7 +265,7 @@ fi
 if [[ -e "$PROJETO" ]]; then
   _warn "${PROJETO} já existe — pulando a geração."
 else
-  _rodar deploy-project-scaffold "$DOMINIO" --from-kit "$KIT" --dir "$PROJETO" \
+  _rodar deploy-scaffold-project "$DOMINIO" --from-kit "$KIT" --dir "$PROJETO" \
      --db-env "$DBENV" --apps "$APPS" --apply || { _erro "Falha ao gerar o projeto."; exit 1; }
 fi
 rm -f "$DBENV"

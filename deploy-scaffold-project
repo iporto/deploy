@@ -2,7 +2,7 @@
 set -uo pipefail
 
 ################################################################################
-# deploy-project-scaffold — cria o repo deploy.<projeto> de um SaaS do kit
+# deploy-scaffold-project — cria o repo deploy.<projeto> de um SaaS do kit
 #
 # Gera o AMBIENTE DE DESENVOLVIMENTO (docker-compose.dev.yml + nginx + php +
 # hosts + envs) e o runbook de produção. Produção é Coolify: por isso NÃO gera
@@ -10,11 +10,11 @@ set -uo pipefail
 # aparato antigo não participa desta trilha.
 #
 # Os artefatos de build (Dockerfile, .deploy/, workflow) NÃO ficam aqui: vivem
-# em cada repo de app, instalados pelo deploy-app-scaffold.
+# em cada repo de app, instalados pelo deploy-scaffold-app.
 #
 # Dry-run por padrão — exige --apply para escrever.
 #
-# Uso:  ./deploy-project-scaffold <dominio> [OPÇÕES]
+# Uso:  ./deploy-scaffold-project <dominio> [OPÇÕES]
 #   <dominio>        domínio de produção. ex.: meuprojeto.com
 #   --slug S         identificador curto      (padrão: 1º rótulo do domínio)
 #   --dev-domain D   domínio de dev           (padrão: <slug>.io)
@@ -394,10 +394,10 @@ if $APPLY; then
   fi
 
   # Artefatos de build nos apps copiados (Dockerfile, .deploy/, workflow).
-  if [[ -n "$KIT" && -x "${LIB}/deploy-app-scaffold" ]]; then
-    "${LIB}/deploy-app-scaffold" "$DIR/code" --apply >/dev/null 2>&1 \
+  if [[ -n "$KIT" && -x "${LIB}/deploy-scaffold-app" ]]; then
+    "${LIB}/deploy-scaffold-app" "$DIR/code" --apply >/dev/null 2>&1 \
       && echo "  ${GREEN}+${NC} artefatos de build nos apps" \
-      || echo "  ${YELLOW}!${NC} rode deploy-app-scaffold ${DIR}/code --apply"
+      || echo "  ${YELLOW}!${NC} rode deploy-scaffold-app ${DIR}/code --apply"
   fi
 
   _escrever_onboarding
@@ -419,7 +419,7 @@ if $APPLY; then
     n=1
     if [[ -z "$KIT" ]]; then
       echo "  ${n}. clonar os apps em ${DIR}/code/ (api.${DOMAIN}, platform.${DOMAIN})"; n=$((n+1))
-      echo "  ${n}. equipar os apps:  deploy-app-scaffold ${DIR}/code --apply"; n=$((n+1))
+      echo "  ${n}. equipar os apps:  deploy-scaffold-app ${DIR}/code --apply"; n=$((n+1))
     fi
     if [[ -z "$DB_ENV" ]]; then
       echo "  ${n}. criar o banco:    deploy-infra createdb ${SLUG}"

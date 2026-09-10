@@ -46,8 +46,8 @@ Na biblioteca `iporto/deploy` (pública):
 | `deploy-infra` (`up`/`createdb`/`status`/`down`/`logs`/`reset`) | ✅ |
 | `infra/` — Traefik, MariaDB, Redis, Mailpit + proxy de socket | ✅ |
 | `deploy-doctor` — verificação de pré-voo | ✅ |
-| `deploy-project-scaffold --from-kit` | ✅ |
-| `deploy-app-scaffold` | ✅ |
+| `deploy-scaffold-project --from-kit` | ✅ |
+| `deploy-scaffold-app` | ✅ |
 | `deploy-shim-install --verbs` | ✅ |
 | `deploy-run dev` por contexto, com sync condicional | ✅ |
 
@@ -145,13 +145,13 @@ registry. Nelas o pin só força emulação sem ganho.
 | `iporto99/php-8-3`, `iporto99/nginx` | ❌ remover — multi-arch confirmado |
 | `traefik`, `mariadb`, `redis`, `mailpit` e demais terceiros | ✅ manter `linux/amd64` |
 
-### 4.3 `deploy-project-scaffold --from-kit` — instanciar o kit como produto
+### 4.3 `deploy-scaffold-project --from-kit` — instanciar o kit como produto
 
 ✅ **Implementado.** Antes, o comando gerava o esqueleto e parava, deixando `code/`
 vazio — era a origem de três dos bloqueios do teste real.
 
 ```bash
-deploy-project-scaffold acme.com --from-kit ~/starter-kit --apply
+deploy-scaffold-project acme.com --from-kit ~/starter-kit --apply
 ```
 
 Resultado:
@@ -192,7 +192,7 @@ e o dev inicia os repos dele depois, se quiser.
 > ✅ Sensíveis (`DB_PASSWORD`, `REDIS_PASSWORD`) e as do Spelt (`SPELT_API_KEY`,
 > `SPELT_WEBHOOK_SECRET`) continuam **vazias**. São do dev.
 
-**Passo 3 — equipar os apps para build.** Rodar o `deploy-app-scaffold` nos apps copiados,
+**Passo 3 — equipar os apps para build.** Rodar o `deploy-scaffold-app` nos apps copiados,
 para nascerem com `Dockerfile`, `.deploy/` e `build.yml`.
 
 **Passo 4 — só dois verbos.** Dos 9 que o `deploy-shim-install` instala hoje, 6 são do
@@ -378,7 +378,7 @@ deploy-infra up                                    # base compartilhada, 1x por 
 deploy-infra createdb acme --print-env > /tmp/acme-db.env
 
 git clone <url-do-kit> ~/starter-kit
-deploy-project-scaffold acme.com --from-kit ~/starter-kit --db-env /tmp/acme-db.env --apply
+deploy-scaffold-project acme.com --from-kit ~/starter-kit --db-env /tmp/acme-db.env --apply
 cd deploy.acme.com
 
 # o comando imprime as linhas do hosts a acrescentar

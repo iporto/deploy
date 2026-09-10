@@ -40,7 +40,7 @@ Um punhado de scripts que você lê em uma tarde e um `.env` por ambiente.
 - [`deploy`](#deploy--deploy-multi-servidor) · [`deploy-sync`](#deploy-sync--sincronizador-com-servidor-remoto) · [`deploy-run`](#deploy-run--gerenciador-de-containers) · [`deploy-promote`](#deploy-promote--liberar-imagem-em-produção)
 - [`deploy-backup`](#deploy-backup--backup-por-container) · [`envedit`](#envedit--envs-criptografados-sops--age) · [`harden-vm`](#harden-vm--fecha-a-superfície-de-rede-da-vm)
 - [`deploy-wizard`](#deploy-wizard--assistente-interativo) · [`deploy-doctor`](#deploy-doctor--verificação-de-pré-voo) · [`deploy-audit`](#deploy-audit--auditoria-multi-projeto) · [`deploy-token-check`](#deploy-token-check--valida-o-personal_access_token)
-- [`deploy-shim-install`](#deploy-shim-install--instala-o-shim-de-bootstrap) · [`deploy-app-scaffold`](#deploy-app-scaffold--artefatos-de-build-no-repo-do-app) · [`deploy-project-scaffold`](#deploy-project-scaffold--cria-o-repo-de-um-projeto-novo)
+- [`deploy-shim-install`](#deploy-shim-install--instala-o-shim-de-bootstrap) · [`deploy-scaffold-app`](#deploy-scaffold-app--artefatos-de-build-no-repo-do-app) · [`deploy-scaffold-project`](#deploy-scaffold-project--cria-o-repo-de-um-projeto-novo)
 
 ---
 
@@ -187,8 +187,8 @@ EOF
 | `deploy-audit` | Varre vários projetos procurando env em texto puro, porta exposta, `chmod 777` |
 | `deploy-token-check` | Diagnostica o token de acesso ao registry |
 | `deploy-shim-install` | Instala os verbos num projeto (acima) |
-| `deploy-app-scaffold` | Instala os artefatos de build (Dockerfile, `.deploy/`, workflow) num repo de app |
-| `deploy-project-scaffold` | Cria o repo `deploy.<projeto>` de um SaaS novo: ambiente de dev + runbook |
+| `deploy-scaffold-app` | Instala os artefatos de build (Dockerfile, `.deploy/`, workflow) num repo de app |
+| `deploy-scaffold-project` | Cria o repo `deploy.<projeto>` de um SaaS novo: ambiente de dev + runbook |
 
 Todo script tem `--help`. `deploy`, `deploy-sync` e `deploy-backup` aceitam `-n`
 para simular; `harden-vm` e `deploy-shim-install` **só simulam** até receberem
@@ -693,15 +693,15 @@ O que ele faz em cada projeto:
 
 ---
 
-## `deploy-project-scaffold` — Cria o repo de um projeto novo
+## `deploy-scaffold-project` — Cria o repo de um projeto novo
 
 Gera o `deploy.<projeto>` de um SaaS: o **ambiente de desenvolvimento** completo
 (compose, nginx, php, hosts, envs, verbos) e o esqueleto do runbook de produção.
 
 ```bash
-./deploy-project-scaffold meuprojeto.com                      # dry-run
-./deploy-project-scaffold meuprojeto.com --ip 192.168.66.99 --apply
-./deploy-project-scaffold meuprojeto.com --apps api,platform,www --apply
+./deploy-scaffold-project meuprojeto.com                      # dry-run
+./deploy-scaffold-project meuprojeto.com --ip 192.168.66.99 --apply
+./deploy-scaffold-project meuprojeto.com --apps api,platform,www --apply
 ```
 
 | Opção | Padrão |
@@ -721,7 +721,7 @@ base de Docker e deixa `code/` vazio para você clonar os seus repositórios.
 
 ```bash
 mkdir ~/Projects/deploy.meuprojeto.com && cd $_
-deploy-project-scaffold meuprojeto.com --dir . --apply
+deploy-scaffold-project meuprojeto.com --dir . --apply
 ```
 
 **Você já tem o `code/` com os seus apps** e quer só a base montada em volta —
@@ -729,7 +729,7 @@ compose, nginx, php-fpm, supervisord, hosts, envs e os verbos:
 
 ```bash
 cd ~/Projects/deploy.meuprojeto.com     # já tem code/api.meuprojeto.com etc.
-deploy-project-scaffold meuprojeto.com --dir . --adopt --apply
+deploy-scaffold-project meuprojeto.com --dir . --adopt --apply
 ```
 
 > [!NOTE]
@@ -751,7 +751,7 @@ Produção é **Coolify**, então não há `docker-compose.prd.yml`, `servers.ym
 Watchtower — a esteira do aparato antigo não participa desta trilha.
 
 E os artefatos de build (`Dockerfile`, `.deploy/`, workflow) **não ficam aqui**:
-vivem em cada repo de app, instalados pelo `deploy-app-scaffold`. Os dois scripts
+vivem em cada repo de app, instalados pelo `deploy-scaffold-app`. Os dois scripts
 são as duas metades do mesmo desenho — este cuida do **dev**, aquele cuida do
 **build para produção**.
 
@@ -762,16 +762,16 @@ são as duas metades do mesmo desenho — este cuida do **dev**, aquele cuida do
 
 ---
 
-## `deploy-app-scaffold` — Artefatos de build no repo do app
+## `deploy-scaffold-app` — Artefatos de build no repo do app
 
 Entrega `Dockerfile`, `.dockerignore`, `.deploy/` e o workflow de build a partir
 de **um template canônico** (`template/php-app`), para que a imagem possa ser
 buildada pelo próprio repositório do app.
 
 ```bash
-./deploy-app-scaffold ~/projetos/api.meuapp.com          # dry-run
-./deploy-app-scaffold ~/projetos --apply                 # varre e instala
-./deploy-app-scaffold . --apply --force                  # atualiza divergentes
+./deploy-scaffold-app ~/projetos/api.meuapp.com          # dry-run
+./deploy-scaffold-app ~/projetos --apply                 # varre e instala
+./deploy-scaffold-app . --apply --force                  # atualiza divergentes
 ```
 
 ### O dilema que ele resolve

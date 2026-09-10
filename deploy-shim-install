@@ -99,7 +99,7 @@ if [[ ${#PROJECTS[@]} -eq 0 ]]; then
     echo "E também não há subdiretório deploy.* aqui para instalar em lote."
     echo
     echo "${BOLD}Se o projeto ainda não existe${NC} — crie a estrutura primeiro:"
-    echo "    deploy-project-scaffold <dominio> --dir . --apply"
+    echo "    deploy-scaffold-project <dominio> --dir . --apply"
     echo "  Gera compose, nginx, envs e hosts, e já instala os verbos."
     echo
     echo "${BOLD}Se você já tem o seu próprio docker-compose${NC} — o shim se ancora nele."

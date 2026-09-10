@@ -1,6 +1,6 @@
 # Template do projeto de deploy
 
-> Este diretório é o **molde** que o `deploy-project-scaffold` copia ao criar um
+> Este diretório é o **molde** que o `deploy-scaffold-project` copia ao criar um
 > projeto. Editar aqui muda o padrão de todos os projetos gerados **a partir de
 > agora** — os que já existem receberam cópias, não links.
 >
@@ -26,23 +26,23 @@ Nove dos arquivos daqui usam marcador; o resto é copiado literal.
 
 ## Mudar um padrão
 
-Edite o arquivo e pronto. O próximo `deploy-project-scaffold` já sai com a
+Edite o arquivo e pronto. O próximo `deploy-scaffold-project` já sai com a
 mudança.
 
 ## Adicionar um arquivo novo
 
 > [!WARNING]
-> **Largar o arquivo aqui não basta.** O `deploy-project-scaffold` tem uma lista
+> **Largar o arquivo aqui não basta.** O `deploy-scaffold-project` tem uma lista
 > explícita `FILES=()`; o que não está nela é **ignorado em silêncio** — sem
 > erro, sem aviso, o arquivo simplesmente não aparece no projeto gerado.
 
 São dois passos:
 
 1. Crie o arquivo aqui, usando os marcadores quando precisar do domínio.
-2. Acrescente a linha `origem|destino` ao `FILES=()` no `deploy-project-scaffold`.
+2. Acrescente a linha `origem|destino` ao `FILES=()` no `deploy-scaffold-project`.
 
 ```bash
-# no deploy-project-scaffold
+# no deploy-scaffold-project
 FILES=(
   # …
   ".docker/Nginx/conf/sites-enabled/admin.conf|.docker/Nginx/conf/sites-enabled/admin.conf"
@@ -70,7 +70,7 @@ primeiro:
 ```bash
 cd ~/Projects/deploy.xyz.com
 rm .docker/Php/conf/php-ini/php.ini
-deploy-project-scaffold xyz.com --dir . --adopt --apply
+deploy-scaffold-project xyz.com --dir . --adopt --apply
 ```
 
 O `--adopt` cria só o que falta. Tudo o mais fica intacto, inclusive `code/`.
@@ -101,5 +101,5 @@ Exatamente pelo mecanismo descrito acima: ele não está no `FILES=()`. A lista
 explícita, que é armadilha ao adicionar um arquivo, aqui é a garantia de que a
 documentação do molde não vaza para dentro dos projetos.
 
-O `template/php-app/` — os artefatos de build que o `deploy-app-scaffold`
+O `template/php-app/` — os artefatos de build que o `deploy-scaffold-app`
 instala nos repositórios de app — funciona igual, com a própria lista `PAIRS=()`.

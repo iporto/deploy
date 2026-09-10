@@ -28,7 +28,7 @@ Um mesmo image serve três papéis, escolhidos pela variável `CONTAINER_ROLE`:
 ## Pré-requisitos
 
 - Os repos dos apps equipados com os artefatos de build:
-  `deploy-app-scaffold ./code --apply`
+  `deploy-scaffold-app ./code --apply`
 - Uma instância do Coolify (control plane) e ao menos um servidor de workload.
 - Um registry (GHCR) e um token com `read:packages` para o Coolify puxar.
 

@@ -2,7 +2,7 @@
 set -uo pipefail
 
 ################################################################################
-# deploy-app-scaffold — instala/atualiza os artefatos de build num repo de app
+# deploy-scaffold-app — instala/atualiza os artefatos de build num repo de app
 #
 # Entrega Dockerfile, .dockerignore, .deploy/ e o workflow de build a partir de
 # UM template canônico (template/php-app), para que a imagem possa ser buildada
@@ -15,7 +15,7 @@ set -uo pipefail
 #         web  → + npm run build (platform, www)
 #         (detectado sozinho por package.json + vite.config.*)
 #
-# Uso:  ./deploy-app-scaffold [DIR] [--type api|web] [--apply] [--force]
+# Uso:  ./deploy-scaffold-app [DIR] [--type api|web] [--apply] [--force]
 #       DIR pode ser um repo de app ou um diretório que contenha vários.
 ################################################################################
 
