@@ -169,6 +169,27 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # ⚠️ A varredura do contexto, acima, confere a ENTRADA. Esta confere a
+      #    SAÍDA — e é a que vale, porque um Dockerfile errado pode trazer para a
+      #    imagem algo que não estava no contexto (um COPY largo demais, um passo
+      #    que gera .env). Roda ANTES do deploy: imagem suja nunca chega ao ar.
+      - name: Conferir que a imagem não carrega segredo
+        env:
+          IMG: ${{ steps.img.outputs.image }}:sha-${{ steps.meta.outputs.short_sha }}
+        run: |
+          docker pull -q "$IMG"
+          suja=0
+          for f in /var/www/html/.env /var/www/html/.env.local \
+                   /var/www/html/.env.production /var/www/html/oauth-private.key \
+                   /var/www/html/storage/oauth-private.key; do
+            if docker run --rm --entrypoint sh "$IMG" -c "test -e $f" 2>/dev/null; then
+              echo "::error::A imagem contém ${f}. Isso nunca pode acontecer."
+              suja=1
+            fi
+          done
+          [ "$suja" -eq 0 ] || exit 1
+          echo "Imagem sem env e sem chave privada."
+
       - name: Disparar deploy no Coolify
         if: ${{ secrets.COOLIFY_APP_UUID != '' }}
         env:
