@@ -353,9 +353,17 @@ else
 fi
 
 # Redes externas (idempotente)
+#
+# ⚠️ As duas saídas precisam ir para /dev/null. O `network inspect --format
+#    {{.Id}}` IMPRIME o id quando a rede existe, e o `network create` imprime o
+#    id da que criou — então cada execução deixava dois hashes soltos no stdout,
+#    sem nenhum rótulo. Passava despercebido no meio da saída do compose, mas
+#    aparecia como lixo em qualquer comando de saída curta (foi o `status` que
+#    revelou) e poluiria o stdout de quem redirecionasse.
 for network in external shared; do
-  docker network inspect "$network" --format '{{.Id}}' 2>/dev/null || \
-    docker network create --driver bridge "$network" --label "com.docker.compose.network=$network"
+  docker network inspect "$network" >/dev/null 2>&1 || \
+    docker network create --driver bridge "$network" \
+      --label "com.docker.compose.network=$network" >/dev/null
 done
 
 # Configuração do Watchtower (credencial de LEITURA do registry)
