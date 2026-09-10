@@ -378,11 +378,17 @@ if $APPLY; then
     cp "$DIR/.env.dev.example" "$DIR/.env.dev"; chmod 600 "$DIR/.env.dev"
   fi
   mkdir -p "$DIR/code"
-  # Só os dois verbos que a trilha Coolify usa. Os outros servem ao ciclo
-  # :prd + Watchtower e não fazem nada aqui.
+  # Só os verbos do LOOP DE DESENVOLVIMENTO. Os que ficam de fora — deploy,
+  # deploy-promote, envedit, deploy-backup — servem ao ciclo :prd + Watchtower e
+  # não fazem nada nesta trilha.
+  #
+  # deploy-mutagen entra mesmo o alvo padrão sendo Docker local: ele é do loop de
+  # dev, e um projeto que aponte para daemon remoto precisa dele. Com daemon
+  # local ele mesmo avisa que não é necessário — mais barato que não estar lá e
+  # a pessoa não descobrir que existe.
   "${LIB}/deploy-shim-install" "$DIR" --apply --all-verbs \
-      --verbs deploy-run,deploy-sync >/dev/null 2>&1 \
-    && echo "  ${GREEN}+${NC} verbos: deploy-run, deploy-sync" \
+      --verbs deploy-run,deploy-sync,deploy-mutagen >/dev/null 2>&1 \
+    && echo "  ${GREEN}+${NC} verbos: deploy-run, deploy-sync, deploy-mutagen" \
     || echo "  ${YELLOW}!${NC} falha ao instalar os verbos — rode deploy-shim-install à mão"
 
   # O TEMPLATE.md é o ponto de partida do segundo momento: com o ambiente no ar,

@@ -57,6 +57,7 @@ titulo() { printf '\n%s%s%s\n' "$BOLD" "$1" "$NC"; }
 AVISOS=0
 
 titulo "Apps em code/"
+COM_YML=0
 for d in code/*/; do
   [[ -d "$d" ]] || continue
   app="$(basename "$d")"
@@ -64,6 +65,7 @@ for d in code/*/; do
     printf '  %s—%s %-34s %ssem mutagen.yml%s\n' "$DIM" "$NC" "$app" "$DIM" "$NC"
     continue
   fi
+  COM_YML=$((COM_YML+1))
   nome="$(_nome_declarado "$d/mutagen.yml")"
   linha="$(_sessao "$nome")"
   status="$(printf '%s' "$linha" | cut -d'|' -f2)"
@@ -87,10 +89,17 @@ done
 
 case "$CMD" in
   status)
-    if [[ $AVISOS -gt 0 ]]; then
+    # ⚠️ "Tudo sincronizando" com zero apps declarando sincronia é falso: nada
+    #    está sincronizando, só não há o que sincronizar. Os dois estados levam
+    #    a ações diferentes e não podem ter a mesma frase.
+    if [[ $COM_YML -eq 0 ]]; then
+      printf '\n%sNenhum app declara sincronia.%s\n' "$YELLOW" "$NC"
+      printf '%s  Cada app precisa do próprio mutagen.yml em code/<app>/.%s\n' "$DIM" "$NC"
+      printf '%s  Há um mutagen.yml.example nos apps gerados pelo kit.%s\n' "$DIM" "$NC"
+    elif [[ $AVISOS -gt 0 ]]; then
       printf '\n%s%d ponto(s) de atenção.%s  Para iniciar as paradas: ./deploy-mutagen start\n' "$YELLOW" "$AVISOS" "$NC"
     else
-      printf '\n%sTudo sincronizando.%s\n' "$GREEN" "$NC"
+      printf '\n%sTudo sincronizando%s — %d app(s).\n' "$GREEN" "$NC" "$COM_YML"
     fi
     ;;
 

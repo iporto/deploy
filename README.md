@@ -850,6 +850,13 @@ filesystem da VM: a configuração chega lá pelo `deploy-sync`, e o **código d
 apps** pelo Mutagen, contínuo. Cada app tem o próprio `mutagen.yml` em
 `code/<app>/` — este comando age sobre todos de uma vez.
 
+É um **verbo de projeto**: roda a partir da raiz, como o `deploy-run`. Projetos
+novos já nascem com ele. Para acrescentá-lo a um projeto que já existe:
+
+```bash
+deploy-shim-install . --apply --verbs deploy-mutagen
+```
+
 ```bash
 ./deploy-mutagen            # status (padrão)
 ./deploy-mutagen start      # inicia as que estão paradas

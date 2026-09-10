@@ -58,7 +58,7 @@ TEMPLATE="${SCRIPTS_DIR}/template/shim"
 
 # Verbos executáveis que passam pelo shim. deploy-readme.md é tratado à parte:
 # é documentação, e não se executa um markdown.
-VERBS=(deploy deploy-audit deploy-backup deploy-promote deploy-run
+VERBS=(deploy deploy-audit deploy-backup deploy-mutagen deploy-promote deploy-run
        deploy-sync deploy-token-check envedit harden-vm deploy-shim-install)
 
 # --verbs restringe a lista. É o que a trilha Coolify usa: dos 10, só deploy-run
