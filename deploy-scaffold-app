@@ -64,7 +64,7 @@ $APPLY || echo "${YELLOW}${BOLD}DRY-RUN${NC} — nada será escrito. Use --apply
 echo
 
 TOT=0; NEW=0; OK=0; DRIFT=0
-for app in "${APPS[@]}"; do
+for app in ${APPS[@]+"${APPS[@]}"}; do
   TOT=$((TOT+1)); name="$(basename "$app")"
 
   t="$TYPE"

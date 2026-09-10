@@ -113,7 +113,7 @@ echo
 
 TOTAL=0; CONVERTED=0; SKIPPED=0; FAILED=0
 
-for proj in "${PROJECTS[@]}"; do
+for proj in ${PROJECTS[@]+"${PROJECTS[@]}"}; do
   TOTAL=$((TOTAL+1))
   name="$(basename "$proj")"
   actions=()
@@ -168,7 +168,7 @@ for proj in "${PROJECTS[@]}"; do
       && chmod 755 "${proj}/.deploy/bin/shim" || ok=false
   fi
 
-  for v in "${to_convert[@]}"; do
+  for v in ${to_convert[@]+"${to_convert[@]}"}; do
     rm -f "${proj}/${v}" && ln -s .deploy/bin/shim "${proj}/${v}" || ok=false
   done
 

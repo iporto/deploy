@@ -416,7 +416,7 @@ if [[ -n "$_COMPOSE_FILE" && -f "$_COMPOSE_FILE" && "$CMD" != "stop" && "$CMD" !
   MISSING=()
   if [[ ${#_BINDS[@]} -gt 0 ]]; then
     if $DOCKER_IS_LOCAL; then
-      for _rel in "${_BINDS[@]}"; do
+      for _rel in ${_BINDS[@]+"${_BINDS[@]}"}; do
         [[ -e "./${_rel}" ]] || MISSING+=("$_rel")
       done
     else

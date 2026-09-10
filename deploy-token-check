@@ -87,7 +87,7 @@ fi
 # ─── 3. Lê os repositórios de código? (checkout) ─────────────────────────────
 
 print_step "3) Consegue LER cada repositório de código? (necessário para o checkout)"
-for slug in "${CODE_SLUGS[@]}"; do
+for slug in ${CODE_SLUGS[@]+"${CODE_SLUGS[@]}"}; do
   c=$(_code "https://api.github.com/repos/$slug")
   case "$c" in
     200) s="✅" ;;
