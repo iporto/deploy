@@ -32,6 +32,18 @@ on:
         required: false
         default: ''
         type: string
+      coolify_uuid:
+        description: >
+          uuid da app no Coolify, ou vários separados por vírgula quando papéis
+          diferentes compartilham a imagem (api + worker + scheduler). Vazio
+          pula o disparo — o build acontece e a imagem é publicada do mesmo jeito.
+
+          NÃO é segredo: sozinho ele não faz nada, quem autoriza é o
+          COOLIFY_TOKEN. Fica aqui, versionado ao lado da definição do app, para
+          não virar mais um segredo a cadastrar por app no repositório.
+        required: false
+        default: ''
+        type: string
       image:
         description: >
           Nome completo da imagem, sem tag. Vazio = deriva de
@@ -45,7 +57,6 @@ on:
       DEPLOY_APP_PRIVATE_KEY: { required: true }
       COOLIFY_URL:            { required: false }
       COOLIFY_TOKEN:          { required: false }
-      COOLIFY_APP_UUID:       { required: false }
       DOCKERHUB_USERNAME:     { required: false }
       DOCKERHUB_TOKEN:        { required: false }
 
@@ -62,7 +73,7 @@ jobs:
     #    um passo à existência de um segredo.
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      COOLIFY_APP_UUID:   ${{ secrets.COOLIFY_APP_UUID }}
+      COOLIFY_APP_UUID:   ${{ inputs.coolify_uuid }}
 
     steps:
       # ⚠️ Token de App, não PAT. Vive 1 hora, é escopado aos repositórios onde o
