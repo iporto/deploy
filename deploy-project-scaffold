@@ -23,6 +23,9 @@ set -uo pipefail
 #   --dir DIR        onde criar               (padrão: ./deploy.<dominio>)
 #   --from-kit DIR   instancia os apps a partir de um checkout do kit
 #   --db-env FILE    aplica as credenciais geradas pelo `deploy-infra createdb`
+#   --adopt          aceita um diretório que JÁ existe: cria só o que falta e
+#                    nunca sobrescreve. Use quando você já tem code/ com os seus
+#                    apps e quer só a base de Docker montada em volta.
 #   --apply          escreve de fato
 ################################################################################
 
@@ -37,7 +40,7 @@ DOMAIN="$1"; shift
 SLUG=""; DEVDOMAIN=""; # Docker local é o caso comum: o projeto responde no loopback. Quem roda o
 # daemon numa VM passa --ip com o endereço dela.
 DEVIP="127.0.0.1"; APPS="api,platform"; DIR=""; APPLY=false
-KIT=""; DB_ENV=""
+KIT=""; DB_ENV=""; ADOPT=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --slug)       SLUG="$2"; shift 2 ;;
@@ -47,6 +50,7 @@ while [[ $# -gt 0 ]]; do
     --dir)        DIR="$2"; shift 2 ;;
     --from-kit)   KIT="$2"; shift 2 ;;
     --db-env)     DB_ENV="$2"; shift 2 ;;
+    --adopt)      ADOPT=true; shift ;;
     --apply)      APPLY=true; shift ;;
     *) echo "Opção desconhecida: $1" >&2; exit 2 ;;
   esac
@@ -89,8 +93,18 @@ echo "${BOLD}Destino${NC}        ${DIR}"
 echo
 $APPLY || echo "${YELLOW}${BOLD}DRY-RUN${NC} — nada será escrito. Use --apply.${NC}"
 
-if [[ -e "$DIR" ]] && $APPLY; then
-  echo "${RED}${DIR} já existe — abortando para não sobrescrever.${NC}" >&2; exit 1
+# Abortar num diretório que já existe é o padrão certo: o caso comum é criar um
+# projeto novo, e sobrescrever silenciosamente o trabalho de alguém é pior do que
+# recusar. --adopt é a saída explícita para o outro caso — "eu JÁ tenho o code/
+# com os meus apps, monte a base do Docker em volta" — e nele nada é sobrescrito:
+# arquivo que já existe é preservado e reportado.
+if [[ -e "$DIR" ]] && $APPLY && ! $ADOPT; then
+  {
+    echo "${RED}${DIR} já existe — abortando para não sobrescrever.${NC}"
+    echo "Se a intenção é acrescentar a base de deploy a um projeto que já existe:"
+    echo "    $(basename "$0") ${DOMAIN} --dir ${DIR} --adopt --apply"
+  } >&2
+  exit 1
 fi
 
 # ⚠️ O destino padrão é relativo ao diretório atual. Quem roda o comando de dentro
@@ -137,15 +151,30 @@ FILES=(
 )
 $WWW && FILES+=(".docker/Nginx/conf/sites-enabled/www.conf|.docker/Nginx/conf/sites-enabled/www.conf")
 
+PRESERVADOS=0
 for pair in "${FILES[@]}"; do
   src="${pair%%|*}"; dst="${pair#*|}"
   [[ -f "$TPL/$src" ]] || { echo "  ${RED}!${NC} ausente no template: $src"; continue; }
+  # ⚠️ Em --adopt, arquivo existente é do usuário: pode ter sido ajustado à mão.
+  #    Sobrescrever aqui apagaria o ajuste sem avisar.
+  if $ADOPT && [[ -f "$DIR/$dst" ]]; then
+    echo "  ${BLUE}=${NC} ${dst}   (já existia — preservado)"
+    PRESERVADOS=$(( PRESERVADOS + 1 )); continue
+  fi
   echo "  ${GREEN}+${NC} ${dst}"
   $APPLY || continue
   mkdir -p "$DIR/$(dirname "$dst")" && _render "$TPL/$src" > "$DIR/$dst"
 done
-echo "  ${GREEN}+${NC} .env.dev            (cópia local do .example, gitignored)"
-echo "  ${GREEN}+${NC} code/               (checkouts dos repos de app)"
+if $ADOPT && [[ -f "$DIR/.env.dev" ]]; then
+  echo "  ${BLUE}=${NC} .env.dev            (já existia — preservado)"
+else
+  echo "  ${GREEN}+${NC} .env.dev            (cópia local do .example, gitignored)"
+fi
+if $ADOPT && [[ -d "$DIR/code" ]] && [[ -n "$(ls -A "$DIR/code" 2>/dev/null)" ]]; then
+  echo "  ${BLUE}=${NC} code/               (intocado — $(ls -d "$DIR/code"/*/ 2>/dev/null | wc -l | tr -d ' ') app(s) seus)"
+else
+  echo "  ${GREEN}+${NC} code/               (checkouts dos repos de app)"
+fi
 
 ################################################################################
 # Instanciar o kit como produto
@@ -265,6 +294,12 @@ _iniciar_repos() {
 # aí que se erra.
 _escrever_onboarding() {
   local f="$DIR/docs/onboarding.md" app
+  # Em --adopt o runbook pode ter sido editado com as URLs reais dos repos —
+  # que é justamente o que o scaffold não tem como saber. Reescrever apagaria.
+  if $ADOPT && [[ -f "$f" ]]; then
+    echo "  ${BLUE}=${NC} docs/onboarding.md   (já existia — preservado)"
+    return 0
+  fi
   mkdir -p "$DIR/docs"
   {
     echo "# Entrar neste projeto"
@@ -339,7 +374,9 @@ _escrever_onboarding() {
 [[ -n "$KIT" ]] && { echo; echo "${BOLD}Apps do kit${NC}"; _instanciar_kit || exit 1; }
 
 if $APPLY; then
-  cp "$DIR/.env.dev.example" "$DIR/.env.dev"; chmod 600 "$DIR/.env.dev"
+  if [[ ! -f "$DIR/.env.dev" ]]; then
+    cp "$DIR/.env.dev.example" "$DIR/.env.dev"; chmod 600 "$DIR/.env.dev"
+  fi
   mkdir -p "$DIR/code"
   # Só os dois verbos que a trilha Coolify usa. Os outros servem ao ciclo
   # :prd + Watchtower e não fazem nada aqui.

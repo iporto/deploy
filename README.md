@@ -711,6 +711,39 @@ Gera o `deploy.<projeto>` de um SaaS: o **ambiente de desenvolvimento** completo
 | `--ip` | `192.168.66.1` — vai para o arquivo `hosts` |
 | `--apps` | `api,platform` (o mínimo); aceita `api,platform,www` |
 | `--dir` | `./deploy.<dominio>` |
+| `--from-kit` | vazio — sem ele, `code/` nasce vazio e você põe os seus apps |
+| `--adopt` | desligado — aceita um diretório que já existe |
+
+### Dois pontos de partida
+
+**Projeto novo, sem o kit.** Sem `--from-kit` ele não copia app nenhum: gera só a
+base de Docker e deixa `code/` vazio para você clonar os seus repositórios.
+
+```bash
+mkdir ~/Projects/deploy.meuprojeto.com && cd $_
+deploy-project-scaffold meuprojeto.com --dir . --apply
+```
+
+**Você já tem o `code/` com os seus apps** e quer só a base montada em volta —
+compose, nginx, php-fpm, supervisord, hosts, envs e os verbos:
+
+```bash
+cd ~/Projects/deploy.meuprojeto.com     # já tem code/api.meuprojeto.com etc.
+deploy-project-scaffold meuprojeto.com --dir . --adopt --apply
+```
+
+> [!NOTE]
+> **`--adopt` nunca sobrescreve.** Arquivo que já existe é preservado e
+> reportado com `=`; só o que falta é criado. `code/` não é tocado em nenhuma
+> hipótese. Rodar duas vezes é seguro — a segunda não muda nada.
+>
+> Sem `--adopt`, um diretório existente **aborta**. É o padrão certo: o caso
+> comum é criar projeto novo, e apagar o trabalho de alguém em silêncio é pior
+> do que recusar.
+
+O nginx nasce com vhost para `api` e `platform` (e `www` com `--apps`), e o
+compose espera os apps em `code/<app>.<dominio>`. Se os seus diretórios tiverem
+outro nome, ajuste os `server_name` em `.docker/Nginx/conf/sites-enabled/`.
 
 ### O que ele deliberadamente NÃO gera
 
