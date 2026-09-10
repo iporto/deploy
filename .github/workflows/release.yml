@@ -53,6 +53,13 @@ jobs:
           done < <(find . -maxdepth 2 -type f -perm -u+x -not -path './.git/*')
           [ "$erros" -eq 0 ] || { echo "::error::$erros script(s) com erro de sintaxe — release abortado"; exit 1; }
 
+      - name: Conferir variáveis de cor não definidas
+        # `bash -n` não pega isto — é erro de runtime, e com `set -u` mata o
+        # script no momento em que a linha é alcançada. Como muitas dessas
+        # linhas vivem em caminhos raros (erro, --adopt, primeira execução), o
+        # defeito chega ao usuário em vez de ao CI.
+        run: python3 .github/audit-vars.py
+
       - name: Calcular a próxima versão
         id: semver
         uses: ietf-tools/semver-action@v1
