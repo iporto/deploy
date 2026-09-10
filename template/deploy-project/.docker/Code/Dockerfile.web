@@ -23,8 +23,13 @@ WORKDIR /var/www/html
 
 # 1) Dependências PHP primeiro (camada cacheada).
 COPY app/composer.json app/composer.lock ./
+# ⚠️ --no-autoloader, NÃO --optimize-autoloader. Aqui só existem o
+#    composer.json e o composer.lock: o código ainda não entrou no contexto, e
+#    montar o classmap sem a árvore de fontes falha em ClassMapGenerator.
+#    O autoloader otimizado sai no dump-autoload do passo 3, já com tudo no
+#    lugar — e essa ordem é o que preserva a camada de cache das dependências.
 RUN composer install --no-dev --prefer-dist --no-progress --no-interaction \
-      --no-scripts --optimize-autoloader
+      --no-scripts --no-autoloader
 
 # 2) Assets do Vite. node/npm vêm na base. As VITE_* do kit são só do dev-server
 #    (HMR) — o bundle de produção resolve a base da API em runtime, então o build

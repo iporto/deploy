@@ -25,8 +25,13 @@ WORKDIR /var/www/html
 
 # 1) Dependências primeiro — camada cacheada enquanto composer.* não muda.
 COPY app/composer.json app/composer.lock ./
+# ⚠️ --no-autoloader, NÃO --optimize-autoloader. Aqui só existem o
+#    composer.json e o composer.lock: o código ainda não entrou no contexto, e
+#    montar o classmap sem a árvore de fontes falha em ClassMapGenerator.
+#    O autoloader otimizado sai no dump-autoload do passo 3, já com tudo no
+#    lugar — e essa ordem é o que preserva a camada de cache das dependências.
 RUN composer install --no-dev --prefer-dist --no-progress --no-interaction \
-      --no-scripts --optimize-autoloader
+      --no-scripts --no-autoloader
 
 # 2) Código da aplicação (vendor/.git/.env/bootstrap-cache ficam de fora via .dockerignore).
 COPY app/ .
