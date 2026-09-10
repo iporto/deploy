@@ -126,7 +126,7 @@ de rotação e quebra se quem o criou sair da organização.
 |---|---|
 | `DEPLOY_APP_ID` | o mesmo |
 | `DEPLOY_APP_PRIVATE_KEY` | o mesmo |
-| `DEPLOY_REPO` | `org/deploy.meuprojeto.com` |
+| `DEPLOY_REPO` | `org/deploy.meuprojeto.com` — **não** a URL. O workflow tolera `https://github.com/org/repo` e `git@github.com:org/repo.git`, normalizando; qualquer outra coisa é recusada com mensagem |
 
 > [!TIP]
 > Os dois primeiros ficam duplicados em cada repositório. Segredo de
@@ -165,7 +165,7 @@ Sintomas reais, com a causa que estava por trás:
 | Coolify: `image ... not found` | O app está apontado para uma tag que não publicamos, normalmente `:latest`. Aponte para `:prd` |
 | Navegador: `ERR_CERT_AUTHORITY_INVALID` | O Let's Encrypt nunca emitiu. Teste `curl -I http://seu.dominio/` — **404 na porta 80** significa que o Traefik não conhece o domínio: falta preencher *Domains* no app, ou o container não está no ar |
 | `403` no checkout cruzado | O App não foi instalado **no repositório do código** — só no de deploy |
-| `404` no dispatch | `DEPLOY_REPO` errado, ou o App sem `Contents: write` no repo de deploy |
+| `404` no dispatch | `DEPLOY_REPO` apontando para repositório que não existe, ou o App sem `Contents: write` no repo de deploy. O formato em si é normalizado antes |
 
 ---
 

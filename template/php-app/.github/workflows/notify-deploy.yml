@@ -77,6 +77,18 @@ jobs:
           # deploy daria checkout em 'main', e dois pushes próximos fariam o
           # segundo build sobrescrever o primeiro com o mesmo código — a imagem
           # não corresponderia ao commit que a disparou.
+          # ⚠️ DEPLOY_REPO é "org/repo", porque vira caminho da API. Colar a URL
+          #    do navegador é o erro natural — e o sintoma seria um 404 seco,
+          #    sem dizer que o formato é que estava errado. Aceita as três formas.
+          repo="${DEPLOY_REPO}"
+          repo="${repo#https://github.com/}"; repo="${repo#http://github.com/}"
+          repo="${repo#git@github.com:}"; repo="${repo%.git}"; repo="${repo%/}"
+          if ! printf '%s' "$repo" | grep -qE '^[^/]+/[^/]+$'; then
+            echo "::error::DEPLOY_REPO inválido: '${DEPLOY_REPO}'"
+            echo "Use org/repo — ex.: minhaorg/deploy.meuprojeto.com"
+            exit 1
+          fi
+
           app="${GITHUB_REPOSITORY##*/}"; app="${app%%.*}"
           payload=$(jq -nc \
             --arg sha     "${GITHUB_SHA}" \
@@ -86,14 +98,14 @@ jobs:
             '{event_type:$type, client_payload:{sha:$sha, version:$version, actor:$actor}}')
 
           code=$(curl -s -o resp.json -w "%{http_code}" -L -X POST \
-            "https://api.github.com/repos/${DEPLOY_REPO}/dispatches" \
+            "https://api.github.com/repos/${repo}/dispatches" \
             -H 'Accept: application/vnd.github+json' \
             -H "Authorization: Bearer ${TOKEN}" \
             -H 'Content-Type: application/json' \
             --data "$payload")
 
           if [ "$code" != "204" ]; then
-            echo "::error::Falha ao avisar ${DEPLOY_REPO} (HTTP $code)"
+            echo "::error::Falha ao avisar ${repo} (HTTP $code)"
             cat resp.json
             exit 1
           fi
