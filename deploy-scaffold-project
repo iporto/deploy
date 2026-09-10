@@ -98,7 +98,12 @@ $APPLY || echo "${YELLOW}${BOLD}DRY-RUN${NC} — nada será escrito. Use --apply
 # recusar. --adopt é a saída explícita para o outro caso — "eu JÁ tenho o code/
 # com os meus apps, monte a base do Docker em volta" — e nele nada é sobrescrito:
 # arquivo que já existe é preservado e reportado.
-if [[ -e "$DIR" ]] && $APPLY && ! $ADOPT; then
+# ⚠️ Diretório que existe mas está VAZIO não tem nada a perder — abortar nele é
+#    papel-carbono do erro que o deploy-shim-install dava: recusar quem fez
+#    `mkdir projeto && cd projeto` e rodou dali, que é o caminho mais natural.
+#    O abort existe para proteger conteúdo; sem conteúdo, não há o que proteger.
+_dir_vazio() { [[ -d "$DIR" ]] && [[ -z "$(ls -A "$DIR" 2>/dev/null)" ]]; }
+if [[ -e "$DIR" ]] && $APPLY && ! $ADOPT && ! _dir_vazio; then
   {
     echo "${RED}${DIR} já existe — abortando para não sobrescrever.${NC}"
     echo "Se a intenção é acrescentar a base de deploy a um projeto que já existe:"

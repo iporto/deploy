@@ -31,6 +31,7 @@ Um punhado de scripts que você lê em uma tarde e um `.env` por ambiente.
 - [Como o ambiente foi desenhado](#como-o-ambiente-foi-desenhado)
 - [Pré-requisitos](#pré-requisitos) · [Instalação](#instalação) · [Fixar uma versão](#fixar-uma-versão)
 - [Os scripts](#os-scripts) — a tabela de tudo, em uma tela
+- [Casos de uso](docs/use-cases.md) — cenários prontos, com os comandos na ordem
 - [Aviso](#aviso) — leia antes de rodar em algo que te importa
 - [Como atualizar os scripts](#como-atualizar-os-scripts)
 - [Documentação](#documentação) · [Licença](#licença)
@@ -975,6 +976,7 @@ Não há registry, organização nem nome de projeto escritos no script.
 | | |
 |---|---|
 | [`DEPLOY-README.md`](DEPLOY-README.md) | **O modelo, não os comandos.** Os dois canais que não se misturam, os quatro verbos e o caminho que um segredo percorre. Leia antes de mexer no desenho do deploy. |
+| [`docs/use-cases.md`](docs/use-cases.md) | **Sete cenários com os comandos na ordem.** Projeto seu sem o kit, SaaS a partir do kit, segundo produto na mesma máquina, entrar num projeto que já existe, desenvolver contra uma VM. Comece por aqui se souber o que quer fazer mas não por onde. |
 | [`docs/development-environment.md`](docs/development-environment.md) | O registro das decisões: por que o `deploy-run dev` usa o contexto Docker e o `prd` não, e os doze defeitos que só apareceram rodando o fluxo numa máquina limpa. |
 | [Starter Kit](https://github.com/Codijo/starter-kit.spelt.com.br) | Um SaaS em Laravel que sobe com esta biblioteca — o consumidor de referência dela. Bom lugar para ver os scripts em uso real. |
 | `--help` | Todo script tem. É a referência mais curta e a que nunca fica desatualizada. |

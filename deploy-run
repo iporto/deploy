@@ -49,6 +49,8 @@ SERVIÇO:
 
 FLAGS:
   --no-pull, -P     Não executa pull de imagens (usa cache local)
+  --no-sync         Não sincroniza antes de subir. Só tem efeito em `dev` com
+                    daemon remoto, que é quando o sync automático acontece.
   --help,    -h     Exibe esta ajuda
 
 EXEMPLOS:
