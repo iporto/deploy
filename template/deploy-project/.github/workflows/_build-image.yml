@@ -166,10 +166,28 @@ jobs:
           file: deploy/.docker/Code/${{ inputs.app }}/Dockerfile
           platforms: linux/amd64
           push: true
-          # ❌ Sem :latest. Tag móvel é o que impede saber o que está em produção.
+          # Três tags, com papéis diferentes:
+          #
+          #   sha-xxxxxxx  imutável — responde "que código exatamente é este?"
+          #   vX.Y.Z       imutável — a mesma coisa, em linguagem de gente
+          #   :prd         MÓVEL — o ponteiro que o destino observa
+          #
+          # ⚠️ Sozinha, a tag móvel é o que impede saber o que está em produção:
+          #    `docker inspect` responde ":prd" e você não fica sabendo de nada.
+          #    Ela só é aceitável porque as duas imutáveis existem ao lado — o
+          #    digest de :prd sempre bate com uma sha- publicada.
+          #
+          # ⚠️ NÃO é :latest de propósito. :latest é o que o Docker puxa quando
+          #    você não pede tag nenhuma — um `docker pull <imagem>` na máquina de
+          #    alguém traria produção sem ninguém ter pedido.
+          #
+          # ⚠️ Um workflow_dispatch com code_ref de outra branch TAMBÉM move o
+          #    :prd. É proposital: é assim que se volta atrás — dispare com o ref
+          #    antigo e o ponteiro volta, sem rebuild de código novo.
           tags: |
             ${{ steps.img.outputs.image }}:sha-${{ steps.meta.outputs.short_sha }}
             ${{ steps.img.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ steps.img.outputs.image }}:prd
           # ⚠️ Sem o label `source` o GHCR cria o pacote SOLTO na organização, sem
           #    vínculo com repositório — e um token escopado por repo não o alcança.
           labels: |
@@ -222,6 +240,6 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| Imagem | \`${{ steps.img.outputs.image }}\` |"
-            echo "| Tags | \`sha-${{ steps.meta.outputs.short_sha }}\`, \`${{ steps.meta.outputs.version }}\` |"
+            echo "| Tags | \`sha-${{ steps.meta.outputs.short_sha }}\`, \`${{ steps.meta.outputs.version }}\`, \`prd\` |"
             echo "| Código | \`${{ inputs.code_repo }}@${{ inputs.code_ref }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
