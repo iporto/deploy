@@ -40,6 +40,7 @@ MODO LOCAL (na VM), sem ambiente — comportamento original:
 
 COMANDOS:
   (nenhum)          Sobe/atualiza todos os serviços
+  status            Mostra o que está no ar neste projeto
   stop              Para todos os containers do projeto
   --fresh, -f       Remove volumes e recria tudo do zero
 
@@ -147,7 +148,14 @@ case "$CMD" in
     [[ -n "$BASTION_HOST" ]] && SSH_CMD+=(-J "$BASTION_HOST")
 
     print_info "Executando no servidor: ${REMOTE_HOST}"
-    [[ ${#REMAINING[@]} -gt 0 ]] && print_info "Serviço(s): ${REMAINING[*]}"
+    # Nem todo argumento restante é serviço: `status`, `stop` e `--fresh` são
+    # comandos. Chamá-los de "Serviço(s)" descrevia errado o que ia acontecer.
+    if [[ ${#REMAINING[@]} -gt 0 ]]; then
+      case "${REMAINING[0]}" in
+        status|stop|--fresh|-f) print_info "Comando: ${REMAINING[*]}" ;;
+        *)                      print_info "Serviço(s): ${REMAINING[*]}" ;;
+      esac
+    fi
 
     # ${arr[*]} puro quebra com "unbound variable" no bash 3.2 (padrão do macOS)
     # quando o array está vazio — mesmo declarado (ex.: "./deploy-run dev" sem
@@ -403,6 +411,28 @@ if [[ "$CMD" == "--fresh" || "$CMD" == "-f" ]]; then
   "${DC[@]}" --profile "$APP_ENV" ${_extra_profiles[@]+"${_extra_profiles[@]}"} "${FILES[@]}" -p "$PROJECT_NAME" up -d --remove-orphans --force-recreate --build
   print_success "Ambiente recriado com sucesso!"
   docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep "$PROJECT_NAME" || true
+  exit 0
+fi
+
+# ⚠️ Este bloco tem que vir ANTES do branch de serviço, mais abaixo: lá qualquer
+#    palavra não reconhecida é tratada como NOME DE SERVIÇO para reconstruir, e
+#    um `./deploy-run dev status` tentaria rebuildar um serviço "status" — com um
+#    erro do compose que não sugere "esse comando não existe".
+if [[ "$CMD" == "status" ]]; then
+  _dc_ps() {
+    "${DC[@]}" --profile "$APP_ENV" ${_extra_profiles[@]+"${_extra_profiles[@]}"} \
+      "${FILES[@]}" -p "$PROJECT_NAME" ps "$@"
+  }
+  # `grep -c` imprime 0 e SAI COM 1 quando não casa nada. O `|| true` engole só
+  # o código de saída; um `|| echo 0` aqui imprimiria dois zeros.
+  _no_ar="$(_dc_ps -q 2>/dev/null | grep -c . || true)"
+  if [[ "${_no_ar:-0}" -eq 0 ]]; then
+    print_warning "Nenhum container deste projeto está no ar."
+    print_info "Para subir:  ./deploy-run ${ENV_TARGET:-dev}"
+    exit 0
+  fi
+  # O `--format table` não existe em todo compose v2; o ps cru é o fallback.
+  _dc_ps --format 'table {{.Name}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || _dc_ps
   exit 0
 fi
 
