@@ -32,6 +32,14 @@ on:
         required: false
         default: ''
         type: string
+      image:
+        description: >
+          Nome completo da imagem, sem tag. Vazio = deriva de
+          ghcr.io/<owner>/<projeto>-<app>. Preencha quando o nome derivado não
+          for o que já está em uso — trocar o nome obriga a repontar o destino.
+        required: false
+        default: ''
+        type: string
     secrets:
       DEPLOY_APP_ID:          { required: true }
       DEPLOY_APP_PRIVATE_KEY: { required: true }
@@ -90,7 +98,13 @@ jobs:
 
       - name: Nome da imagem
         id: img
+        env:
+          IN_IMAGE: ${{ inputs.image }}
         run: |
+          if [ -n "$IN_IMAGE" ]; then
+            echo "image=${IN_IMAGE}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # deploy.meuprojeto.com + app api.meuprojeto.com
           #   → ghcr.io/<owner>/meuprojeto-api
           repo="${GITHUB_REPOSITORY##*/}"          # deploy.meuprojeto.com
