@@ -164,6 +164,7 @@ Sintomas reais, com a causa que estava por trás:
 | `A imagem contém .../oauth-private.key` | Chave do Passport versionada. O padrão do Laravel cobre `storage/oauth-*.key`; se ela nasce na raiz, fica de fora |
 | Coolify: `image ... not found` | O app está apontado para uma tag que não publicamos, normalmente `:latest`. Aponte para `:prd` |
 | Navegador: `ERR_CERT_AUTHORITY_INVALID` | O Let's Encrypt nunca emitiu. Teste `curl -I http://seu.dominio/` — **404 na porta 80** significa que o Traefik não conhece o domínio: falta preencher *Domains* no app, ou o container não está no ar |
+| `Couldn't find the latest tag` no semver | Repositório sem nenhuma tag. O `fallbackTag: 'v0.0.0'` do template resolve; se o workflow veio de uma versão anterior, acrescente-o ou crie a primeira tag à mão |
 | `403` no checkout cruzado | O App não foi instalado **no repositório do código** — só no de deploy |
 | `404` no dispatch | `DEPLOY_REPO` apontando para repositório que não existe, ou o App sem `Contents: write` no repo de deploy. O formato em si é normalizado antes |
 

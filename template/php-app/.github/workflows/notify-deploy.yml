@@ -35,7 +35,15 @@ jobs:
         with:
           token: ${{ github.token }}
           branch: main
+          # Commit sem prefixo reconhecido ainda gera versão: sem isso, um push
+          # com mensagem fora da convenção não produziria imagem nenhuma.
           noVersionBumpBehavior: 'patch'
+          # ⚠️ Sem fallbackTag, um repositório NOVO — sem nenhuma tag ainda —
+          #    falha logo na primeira execução com "Couldn't find the latest
+          #    tag". Obriga a criar uma tag à mão antes do primeiro push, que é
+          #    justamente o passo que ninguém lembra. Com v0.0.0 como base, o
+          #    primeiro push já sai versionado (v0.0.1, ou v0.1.0 se for feat).
+          fallbackTag: 'v0.0.0'
 
       - name: Criar e publicar a tag
         if: github.event_name == 'push'
