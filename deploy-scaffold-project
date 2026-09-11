@@ -18,7 +18,7 @@ set -uo pipefail
 # Uso:  ./deploy-scaffold-project <dominio> [OPÇÕES]
 #   <dominio>        domínio de produção. ex.: meuprojeto.com
 #   --slug S         identificador curto      (padrão: 1º rótulo do domínio)
-#   --dev-domain D   domínio de dev           (padrão: <slug>.io)
+#   --dev-domain D   domínio de dev           (padrão: <slug>.test)
 #   --ip IP          IP para o arquivo hosts  (padrão: 127.0.0.1 — Docker local)
 #   --apps LISTA     api,platform | api,platform,www   (padrão: api,platform)
 #   --dir DIR        onde criar               (padrão: ./deploy.<dominio>)

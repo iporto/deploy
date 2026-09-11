@@ -829,6 +829,17 @@ gera as senhas, sobe a infra, cria o banco, gera o projeto e mostra como entrar.
 
 Exige terminal interativo. Para automação, use os comandos diretamente.
 
+### Variável de ambiente
+
+| Variável | Descrição | Padrão |
+|---|---|---|
+| `DEPLOY_KIT_REPO` | Repositório do kit a clonar quando não houver um clone local em `~/starter-kit`, `~/kit` ou `./starter-kit` | o [starter kit do Spelt](https://github.com/Codijo/starter-kit.spelt.com.br) |
+
+> Esta biblioteca **não depende do kit**. O `deploy-scaffold-project` copia de
+> qualquer diretório que receba em `--from-kit`, e sem a flag gera o projeto com
+> `code/` vazio. A URL acima é só o atalho do assistente para quem ainda não
+> clonou nada — aponte-a para o seu próprio kit se tiver um.
+
 ---
 
 ## `deploy-doctor` — Verificação de pré-voo

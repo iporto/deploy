@@ -9,9 +9,14 @@ set -uo pipefail
 # manualmente do ponto exato, porque viu o comando.
 #
 # Uso:  ./deploy-wizard
+#
+# Variável de ambiente:
+#   DEPLOY_KIT_REPO   repositório do kit a clonar quando não houver um local.
+#                     Padrão: o starter kit do Spelt. Aponte para outro se você
+#                     mantém o seu próprio kit — a biblioteca não depende deste.
 ################################################################################
 
-case "${1:-}" in -h|--help) sed -n '5,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+case "${1:-}" in -h|--help) sed -n '5,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
 
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
 BLUE=$'\033[0;34m'; MAG=$'\033[0;35m'; CYAN=$'\033[0;36m'
@@ -132,6 +137,11 @@ printf '\n%sEnter para começar...%s' "$YELLOW" "$NC"; _ler _
 
 # ─── Detecção ────────────────────────────────────────────────────────────────
 _titulo "O que já existe nesta máquina"
+# A biblioteca não depende do kit: ela só sabe copiar de um diretório que lhe
+# entreguem. Esta URL é o atalho de conveniência para quem não tem um clone à
+# mão — e é sobrescrevível, para que um kit próprio use o mesmo assistente.
+KIT_REPO="${DEPLOY_KIT_REPO:-https://github.com/Codijo/starter-kit.spelt.com.br.git}"
+
 KIT_ENCONTRADO=""
 for c in ~/starter-kit ~/kit ./starter-kit; do
   [[ -d "$c/code/api" && -d "$c/code/platform" ]] && { KIT_ENCONTRADO="$(cd "$c" && pwd)"; break; }
@@ -259,7 +269,7 @@ _ok "database, usuário e senha criados para '${SLUG}'"
 _titulo "4/5 — Gerando o projeto"
 if [[ ! -d "$KIT/code/api" ]]; then
   _info "Clonando o kit em ${KIT}..."
-  _rodar git clone --quiet https://github.com/Codijo/starter-kit.spelt.com.br.git "$KIT" \
+  _rodar git clone --quiet "$KIT_REPO" "$KIT" \
     || { _erro "Falha ao clonar o kit."; exit 1; }
 fi
 if [[ -e "$PROJETO" ]]; then
