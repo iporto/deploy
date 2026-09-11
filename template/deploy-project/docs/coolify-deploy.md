@@ -1,7 +1,10 @@
-# Deploy em produção — Coolify
+# Deploy em produção
 
-> Este projeto **não** sobe por `./deploy`. A esteira do aparato antigo
-> (rsync + Watchtower + SOPS) serve outra trilha. Aqui a produção é **Coolify**.
+> Onde as imagens deste repositório vão parar, e o que você precisa preencher.
+
+Este projeto **não** sobe por `./deploy`. A esteira do aparato antigo
+(rsync + Watchtower + SOPS) serve outra trilha. O scaffold entrega este projeto
+apontado para **Coolify** — que é uma opção, não a única.
 
 ## O modelo
 
@@ -9,22 +12,22 @@
 push no repo do app
   └─ versiona (tag + Release) e avisa ESTE repositório por repository_dispatch
        └─ ESTE repositório constrói, com o Dockerfile de .docker/Code/<app>/
-            └─ ghcr.io/<owner>/<projeto>-<app>:sha-… e :vX.Y.Z
+            └─ ghcr.io/<owner>/<projeto>-<app>:sha-… · :vX.Y.Z · :prd
                  └─ POST /api/v1/deploy no Coolify
-                      └─ o workload puxa a imagem e recria o container
+                      └─ o workload puxa :prd e recria o container
 ```
 
 **O build é centralizado aqui.** O repositório do app não tem Dockerfile: ele
-versiona o commit e avisa. Um Dockerfile mudado neste repositório vale para
-todos os apps no mesmo commit, e o contexto de build pode ser inspecionado antes
-do push — é o que permite a varredura de segredo em texto puro que o
-`_build-image.yml` faz antes de publicar a camada.
+versiona o commit e avisa. Um Dockerfile mudado aqui vale para todos os apps no
+mesmo commit, e o contexto de build é inspecionado antes do push — é o que
+permite a varredura de segredo em texto puro que o `_build-image.yml` faz antes
+de publicar a camada.
 
 O build sai da máquina que roda os containers, e a imagem versionada no registry
 funciona como backup fora da VM. No Coolify, cada app é do tipo **Docker Image**
 — não Git+Dockerfile.
 
-Um mesmo image serve três papéis, escolhidos pela variável `CONTAINER_ROLE`:
+Um mesmo image serve três papéis, escolhidos por `CONTAINER_ROLE`:
 
 | Papel | `CONTAINER_ROLE` | Processo |
 |---|---|---|
@@ -32,61 +35,64 @@ Um mesmo image serve três papéis, escolhidos pela variável `CONTAINER_ROLE`:
 | Worker | `worker` | `php artisan horizon` |
 | Scheduler | `scheduler` | `php artisan schedule:work` |
 
-## Pré-requisitos
+---
 
-- Os repos dos apps equipados com os artefatos de build:
-  `deploy-scaffold-app ./code --apply`
-- Uma instância do Coolify (control plane) e ao menos um servidor de workload.
-- Um registry (GHCR) e um token com `read:packages` para o Coolify puxar.
+## O que preencher
 
-## O passo a passo
+1. **Equipar os repos dos apps** com o workflow de aviso:
 
-> ⚠️ **Este arquivo é um esqueleto.** O runbook completo — setup do Coolify,
-> banco e cache, criação dos recursos, blocos de env por app, DNS, secrets do
-> auto-deploy e a lista de gotchas — é específico do produto e vive na
-> documentação dele, não nesta biblioteca.
->
-> Copie aqui o runbook do projeto de referência mais próximo e adapte.
+   ```bash
+   deploy-scaffold-app ./code --apply
+   ```
 
-1. Provisionar os servidores (control plane + workload).
-2. Firewall no host — o Coolify remove o `ufw`; use o firewall do provedor.
-3. Subir o Coolify e apontar o domínio do painel.
-4. Criar banco e cache como recursos gerenciados.
-5. Criar um recurso **Docker Image** por papel (web, worker, scheduler) por app.
-6. Preencher os envs de cada recurso.
-7. DNS dos domínios públicos apontando para o workload.
-8. Criar o **GitHub App** e os segredos (abaixo) — é o que liga os dois repos.
-9. Smoke test: HTTPS válido, health check, uma fila processando.
+2. **Os segredos deste repositório** (*Settings → Secrets and variables →
+   Actions*):
+
+   | Segredo | O que é |
+   |---|---|
+   | `DEPLOY_APP_ID` · `DEPLOY_APP_PRIVATE_KEY` | o GitHub App que cruza os dois repositórios |
+   | `COOLIFY_URL` · `COOLIFY_TOKEN` | painel e token da API |
+   | `DOCKERHUB_USERNAME` · `DOCKERHUB_TOKEN` | só se a imagem base for privada |
+
+   E, **no repositório de cada app**: `DEPLOY_APP_ID`,
+   `DEPLOY_APP_PRIVATE_KEY` e `DEPLOY_REPO` (`org/deploy.meuprojeto.com`).
+
+3. **O `coolify_uuid`** em `.github/workflows/build.<app>.yml`, depois de criar
+   o recurso no Coolify. Ele é **versionado, não segredo**: sozinho não autoriza
+   nada — quem autoriza é o `COOLIFY_TOKEN`.
+
+   ```yaml
+         coolify_uuid: 'abc123'          # vários, separados por vírgula
+   ```
+
+   **Vazio, a esteira publica a imagem e não dispara deploy nenhum.** É o estado
+   certo antes de o destino existir — e é também a trilha inteira de quem não
+   usa Coolify.
 
 ---
 
-## O GitHub App e os segredos
+## Os runbooks
 
-O build é centralizado, e isso exige uma credencial que cruze repositórios em
-dois sentidos: o app avisa este repositório, e este repositório dá `checkout` no
-código do app. O `GITHUB_TOKEN` não serve — ele nunca sai do próprio repo.
+O passo a passo não vive neste arquivo: ele é o mesmo para todos os projetos e
+mora na biblioteca, onde é corrigido uma vez só.
 
-Um **GitHub App** faz isso com token de 1 hora, escopado, e que não morre junto
-com uma pessoa — ao contrário de um PAT.
+| | |
+|---|---|
+| **Onde isso roda** | `docs/deployment-targets.md` da biblioteca — as três trilhas (VM própria, Coolify, só a imagem), o que um destino precisa saber fazer e como trocar depois |
+| **Coolify do zero** | `docs/coolify-setup.md` — criar token, projeto, recurso e envs, no painel **e** por API; de onde sai o `coolify_uuid`; a tabela de sintomas |
+| **A esteira** | `docs/production-pipeline.md` — as três tags, o GitHub App passo a passo, rollback |
 
-**Criar uma vez, na organização:**
+Online: <https://github.com/iporto/deploy/tree/main/docs>
 
-1. *Settings → Developer settings → GitHub Apps → New GitHub App*
-2. Permissões de repositório: **Contents: Read and write**
-3. *Install App* na organização, nos repositórios de app **e** neste de deploy
-4. Gerar uma *private key* (`.pem`) e guardar o `App ID`
+---
 
-**Segredos de organização:**
+## Específico deste projeto
 
-| Segredo | Onde é usado | Para quê |
-|---|---|---|
-| `DEPLOY_APP_ID` | app e deploy | id do GitHub App |
-| `DEPLOY_APP_PRIVATE_KEY` | app e deploy | conteúdo do `.pem` |
-| `DEPLOY_REPO` | repo do app | `org/deploy.meuprojeto.com` |
-| `COOLIFY_URL` · `COOLIFY_TOKEN` | deploy | API do Coolify |
-| `COOLIFY_UUID_<APP>` | deploy | um por app: `COOLIFY_UUID_API`, `COOLIFY_UUID_PLATFORM`. Aceita vários UUIDs separados por vírgula, para os papéis que compartilham a imagem |
-| `DOCKERHUB_USERNAME` · `DOCKERHUB_TOKEN` | deploy | só se a imagem base for privada |
+> Preencha abaixo o que só vale aqui: domínios, quais papéis existem, quais
+> serviços gerenciados (banco, cache) e qualquer desvio do padrão. O resto está
+> nos runbooks acima.
 
-> [!TIP]
-> Os segredos do Coolify e do Docker Hub ficam **num repositório só** — o de
-> deploy. No modelo anterior, cada repo de app precisava do seu.
+- Domínios:
+- Papéis no ar:
+- Banco / cache:
+- Desvios do padrão:

@@ -117,8 +117,14 @@ de rotação e quebra se quem o criou sair da organização.
 | `DEPLOY_APP_PRIVATE_KEY` | o `.pem` **inteiro**, com as linhas `-----BEGIN` e `-----END` |
 | `COOLIFY_URL` | a URL do painel, sem barra no fim |
 | `COOLIFY_TOKEN` | *Keys & Tokens → API tokens* no Coolify |
-| `COOLIFY_UUID_<APP>` | um por app: `COOLIFY_UUID_API`, `COOLIFY_UUID_WWW`. Aceita vários uuid separados por vírgula, para papéis que compartilham a imagem |
 | `DOCKERHUB_USERNAME` · `DOCKERHUB_TOKEN` | só se a imagem base for privada |
+
+> [!NOTE]
+> **O uuid da app no Coolify não é segredo e não fica aqui.** Ele é o input
+> `coolify_uuid` do `build.<app>.yml`, versionado: sozinho não autoriza nada —
+> quem autoriza é o `COOLIFY_TOKEN`. Vazio, a esteira publica a imagem e não
+> dispara deploy nenhum, que é o estado certo antes de o destino existir.
+> Ver [`deployment-targets.md`](deployment-targets.md).
 
 **No repositório de CADA APP:**
 
