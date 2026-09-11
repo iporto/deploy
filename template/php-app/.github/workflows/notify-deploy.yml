@@ -1,9 +1,9 @@
 # Versiona este commit e avisa o repositório de deploy.
 #
 # Este repositório NÃO constrói imagem. Os Dockerfiles vivem no repo de deploy,
-# em .docker/Code/, que é quem builda, publica e dispara o Coolify.
+# em .docker/Code/, que é quem builda, publica e dispara o deploy.
 #
-# Segredos necessários (de organização, configurados uma vez):
+# Segredos necessários, neste repositório:
 #   • DEPLOY_APP_ID / DEPLOY_APP_PRIVATE_KEY   GitHub App com contents:write no
 #                                              repositório de deploy
 #   • DEPLOY_REPO                              org/deploy.meuprojeto.com

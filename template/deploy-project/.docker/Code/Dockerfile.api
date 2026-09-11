@@ -4,14 +4,14 @@
 #    prefixo `app/`. Construir com o contexto errado falha em `composer.json`.
 #
 #    __APP__ é substituído pelo scaffold pelo diretório do app.
-# Imagem de PRODUÇÃO da API (deploy via Coolify).
+# Imagem de produção da API.
 # Base = a MESMA imagem custom do dev → paridade de runtime (PHP 8.3 + extensões).
 #
-# Diferenças deliberadas vs o padrão "fat" com rsync (adequação ao Coolify):
+# Diferenças deliberadas vs o padrão "fat" com rsync:
 #   • serve o código direto de /var/www/html (sem rsync p/ volume compartilhado);
-#   • NÃO embute .env (o Coolify injeta envs em runtime);
-#   • NÃO roda migrate no boot (é "post-deployment command" no Coolify);
-#   • worker/scheduler são o MESMO image com CMD trocado (horizon / schedule:work).
+#   • NÃO embute .env — as envs chegam em runtime;
+#   • NÃO roda migrate no boot — é passo de pós-deploy;
+#   • worker/scheduler são o MESMO image, com CONTAINER_ROLE trocado.
 # Versão FIXA de propósito. Com :latest, um rebuild meses depois troca o PHP
 # embaixo de quem já estava rodando — e o sintoma aparece longe da causa.
 FROM iporto99/php-8-3:1.5

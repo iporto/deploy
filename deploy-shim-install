@@ -61,8 +61,8 @@ TEMPLATE="${SCRIPTS_DIR}/template/shim"
 VERBS=(deploy deploy-audit deploy-backup deploy-mutagen deploy-promote deploy-run
        deploy-sync deploy-token-check envedit harden-vm deploy-shim-install)
 
-# --verbs restringe a lista. É o que a trilha Coolify usa: dos 10, só deploy-run
-# e deploy-sync têm função lá — os outros servem ao ciclo :prd + Watchtower.
+# --verbs restringe a lista. Projeto que versiona só o ambiente de dev usa dois
+# dos 10 — deploy-run e deploy-sync; os outros servem ao ciclo :prd + Watchtower.
 if [[ -n "$VERBS_OVERRIDE" ]]; then
   IFS=',' read -r -a VERBS <<< "$VERBS_OVERRIDE"
   for v in "${VERBS[@]}"; do
@@ -73,8 +73,8 @@ fi
 
 # Descobre os projetos: um diretório específico, ou a varredura da raiz.
 PROJECTS=()
-# Reconhece os dois modelos: o aparato antigo (.env.prd/compose de produção) e a
-# trilha Coolify, que só tem ambiente de dev — produção é o runbook do Coolify.
+# Reconhece os dois modelos: com produção versionada aqui (.env.prd/compose de
+# produção) e sem — projeto em que produção é imagem publicada no registry.
 if [[ -e "${ROOT}/docker-compose.prd.yml" || -e "${ROOT}/.env.prd" || -e "${ROOT}/.deploy" \
    || -e "${ROOT}/docker-compose.dev.yml" || -e "${ROOT}/.env.dev" ]]; then
   PROJECTS=("$ROOT")

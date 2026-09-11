@@ -38,13 +38,9 @@ jobs:
       code_repo: ${{ github.repository_owner }}/__APP__
       code_ref: ${{ github.event.inputs.code_ref || github.event.client_payload.sha || 'main' }}
       version: ${{ github.event.client_payload.version || '' }}
-      # uuid da app no Coolify. Preencha depois de criar o recurso lá; vazio,
-      # o build publica a imagem e NÃO dispara o deploy — o que é o estado certo
-      # antes de o destino existir. Aceita vários separados por vírgula, para
-      # papéis que compartilham a mesma imagem (api + worker + scheduler).
-      #
-      # Fica aqui, versionado, e não como segredo: sozinho ele não faz nada —
-      # quem autoriza é o COOLIFY_TOKEN. Assim não há segredo novo por app.
+      # uuid da app no destino. Vazio: publica a imagem e não dispara deploy.
+      # Aceita vários separados por vírgula, para papéis que compartilham a
+      # mesma imagem (api + worker + scheduler).
       coolify_uuid: ''
     secrets:
       DEPLOY_APP_ID:          ${{ secrets.DEPLOY_APP_ID }}

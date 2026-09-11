@@ -1,13 +1,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Workflow reutilizável: constrói e publica UMA imagem de app no GHCR e avisa o
-# Coolify.
+# Workflow reutilizável: constrói e publica UMA imagem de app no GHCR e dispara
+# o deploy no destino, quando houver um configurado.
 #
 # Este repositório é o dono dos Dockerfiles. Os repositórios de app só avisam
 # que há código novo (repository_dispatch) — o build acontece aqui.
 #
-# Por que centralizado: um Dockerfile por app, num lugar só, muda todos de uma
-# vez. E o contexto de build pode ser inspecionado antes do push — é o que
-# permite a varredura de segredo em texto puro logo abaixo.
+# Centralizado: um Dockerfile por app, num lugar só, muda todos de uma vez. E o
+# contexto de build pode ser inspecionado antes do push — é o que permite a
+# varredura de segredo em texto puro logo abaixo.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Build image (reusable)
 
@@ -34,13 +34,9 @@ on:
         type: string
       coolify_uuid:
         description: >
-          uuid da app no Coolify, ou vários separados por vírgula quando papéis
+          uuid da app no destino, ou vários separados por vírgula quando papéis
           diferentes compartilham a imagem (api + worker + scheduler). Vazio
-          pula o disparo — o build acontece e a imagem é publicada do mesmo jeito.
-
-          NÃO é segredo: sozinho ele não faz nada, quem autoriza é o
-          COOLIFY_TOKEN. Fica aqui, versionado ao lado da definição do app, para
-          não virar mais um segredo a cadastrar por app no repositório.
+          pula o disparo — a imagem é construída e publicada do mesmo jeito.
         required: false
         default: ''
         type: string

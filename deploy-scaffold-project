@@ -5,9 +5,9 @@ set -uo pipefail
 # deploy-scaffold-project — cria o repo deploy.<projeto> de um SaaS do kit
 #
 # Gera o AMBIENTE DE DESENVOLVIMENTO (docker-compose.dev.yml + nginx + php +
-# hosts + envs) e o runbook de produção. Produção é Coolify: por isso NÃO gera
-# docker-compose.prd.yml, servers.yml nem Watchtower — a esteira de deploy do
-# aparato antigo não participa desta trilha.
+# hosts + envs) e o runbook de produção. Produção sai como imagem publicada no
+# registry: por isso NÃO gera docker-compose.prd.yml, servers.yml nem
+# Watchtower — a esteira de rsync + promoção não participa desta trilha.
 #
 # O build é CENTRALIZADO: os Dockerfiles ficam aqui, em .docker/Code/<app>/, e
 # este repositório constrói a imagem. O repo do app só avisa — o
@@ -278,8 +278,8 @@ _reescrever_env() {
 print_falha() { echo "${RED}Falha: $*${NC}" >&2; }
 
 # Um projeto completo é uma ÁRVORE de repositórios: o deploy é um, e cada app é
-# outro. Não é preciosismo — a trilha de produção constrói a imagem a partir do
-# repositório DO APP (push → GHA → GHCR → Coolify). Sem um repo por app não há
+# outro. Não é preciosismo — a esteira de produção constrói a imagem a partir do
+# repositório DO APP (push → GHA → GHCR → destino). Sem um repo por app não há
 # build.
 #
 # ⚠️ O `git init` aqui existe para evitar o pior silêncio possível: o .gitignore
@@ -324,7 +324,7 @@ _artefatos_de_build() {
   mkdir -p "$DIR/.github/workflows"
   if [[ -f "$TPL/.github/workflows/_build-image.yml" ]]; then
     cp "$TPL/.github/workflows/_build-image.yml" "$DIR/.github/workflows/_build-image.yml"
-    echo "  ${GREEN}+${NC} .github/workflows/_build-image.yml   (constrói e avisa o Coolify)"
+    echo "  ${GREEN}+${NC} .github/workflows/_build-image.yml   (constrói e dispara o deploy)"
   fi
   for slug in $(echo "$APPS" | tr ',' ' '); do
     app="${slug}.${DOMAIN}"

@@ -4,12 +4,12 @@
 #    prefixo `app/`. Construir com o contexto errado falha em `composer.json`.
 #
 #    __APP__ é substituído pelo scaffold pelo diretório do app.
-# Imagem de PRODUÇÃO do Platform (deploy via Coolify).
+# Imagem de produção do app web (__APP__).
 # Igual à da API, + build do Vite. Base = a MESMA imagem custom do dev.
 #
 #   • serve o código direto de /var/www/html (sem rsync);
-#   • NÃO embute .env (Coolify injeta em runtime);
-#   • NÃO roda migrate no boot (o painel normalmente nem migra — a API é a dona do schema).
+#   • NÃO embute .env — as envs chegam em runtime;
+#   • NÃO roda migrate no boot: a API é a dona do schema.
 # Versão FIXA de propósito. Com :latest, um rebuild meses depois troca o PHP
 # embaixo de quem já estava rodando — e o sintoma aparece longe da causa.
 FROM iporto99/php-8-3:1.5

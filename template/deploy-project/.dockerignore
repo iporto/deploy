@@ -16,7 +16,7 @@ backups/
 hosts
 docker-compose*.yml
 
-# ⚠️ NUNCA embutir env na imagem — o Coolify injeta em runtime.
+# ⚠️ NUNCA embutir env na imagem — as envs chegam em runtime.
 .env
 .env.*
 .envs/

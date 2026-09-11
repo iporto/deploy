@@ -5,7 +5,7 @@ set -uo pipefail
 # deploy-scaffold-app — instala/atualiza o workflow de aviso num repo de app
 #
 # O build é CENTRALIZADO: os Dockerfiles vivem no repositório de deploy, que
-# constrói a imagem e dispara o Coolify. O repositório do app só versiona o
+# constrói a imagem e dispara o deploy. O repositório do app só versiona o
 # commit e avisa, por repository_dispatch.
 #
 # Por isso aqui entra um arquivo só — o notify-deploy.yml. Rodar sem --apply

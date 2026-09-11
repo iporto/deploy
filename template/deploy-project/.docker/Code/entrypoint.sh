@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# Entrypoint de PRODUÇÃO (Coolify). Deliberadamente enxuto — o oposto do "fat"
-# entrypoint do modelo com rsync:
-#   • NÃO faz rsync (o código já está em /var/www/html na imagem);
-#   • NÃO copia .env (o Coolify injeta as envs em runtime, como variáveis reais);
-#   • NÃO roda migrate (isso é "post-deployment command" no Coolify — uma vez por deploy,
-#     não a cada boot de cada container).
+# Entrypoint de produção. Enxuto por desenho — o oposto do "fat" entrypoint do
+# modelo com rsync:
+#   • NÃO faz rsync: o código já está em /var/www/html na imagem;
+#   • NÃO copia .env: as envs chegam como variáveis de ambiente do runtime;
+#   • NÃO roda migrate: é passo de pós-deploy, uma vez por deploy — não a cada
+#     boot de cada container.
 #
-# O MESMO image serve os três papéis; o papel é o CMD que o Coolify passa:
+# O MESMO image serve os três papéis, selecionados por CONTAINER_ROLE:
 #   • web       → supervisord (nginx + php-fpm)   [CMD default deste image]
-#   • worker    → php artisan horizon             [override no Coolify]
-#   • scheduler → php artisan schedule:work       [override no Coolify]
+#   • worker    → php artisan horizon
+#   • scheduler → php artisan schedule:work
 set -e
 cd /var/www/html
 
@@ -24,15 +24,15 @@ mkdir -p storage/framework/cache/data storage/framework/sessions \
 chown -R "$FPM_USER":"$FPM_USER" storage bootstrap/cache
 chmod -R 775 storage bootstrap/cache
 
-# Caches do Laravel DEPOIS que o Coolify já injetou as envs (o build não as tem).
+# Caches do Laravel DEPOIS que as envs de runtime existem — o build não as tem.
 # config:cache é crítico (consolida env). route/view são best-effort: não derrubam o
 # boot se houver rota com closure (route:cache falha nesses casos).
 php artisan config:cache
 php artisan route:cache  >/dev/null 2>&1 || true
 php artisan view:cache   >/dev/null 2>&1 || true
 
-# Papel do container por ENV — o tipo "Docker Image" do Coolify NÃO expõe override de
-# comando, então a UI de Environment Variables resolve. Um image, três papéis:
+# Papel do container por variável de ambiente, não por CMD: nem todo runtime
+# permite trocar o comando de um image pronto. Um image, três papéis:
 #   web (default) → nginx + php-fpm (o CMD supervisord)
 #   worker        → Horizon (fila: webhooks, jobs assíncronos)
 #   scheduler     → schedule:work (cron do Laravel; alternativa à Scheduled Task nativa)
