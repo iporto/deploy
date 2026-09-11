@@ -343,6 +343,45 @@ echo "      coolify_uuid: '${APP_UUID}'"
 
 ---
 
+## Por que isto não é um verbo
+
+> **Decisão (2026-09-11): fica como documentação.** O script acima não vira
+> `deploy-coolify` por enquanto.
+
+A biblioteca tem um contrato estreito e de propósito: ela leva o código até uma
+imagem no registry e para ali. Quem puxa a imagem é o destino, e destino é
+escolha do projeto — [`deployment-targets.md`](deployment-targets.md) lista três,
+e a terceira é "nenhum dos dois, eu resolvo".
+
+Um `deploy-coolify` inverteria isso. O Coolify passaria de *um* destino a **o**
+destino: ganharia verbo próprio, entraria no `--help`, na tabela de scripts, no
+`deploy-doctor`. Quem chega na biblioteca leria que ela é uma ferramenta de
+Coolify — que é exatamente o que ela não é. O custo não é escrever o script; é
+essa leitura.
+
+O que **não** muda com a decisão: o script acima existe, está testado no formato
+em que está, e copiar-colar resolve o problema de hoje. A diferença entre ele e
+um verbo é embalagem — `--apply`, idempotência, mensagem de erro — não
+capacidade.
+
+### O que reabriria
+
+Qualquer um destes, sozinho, já justifica:
+
+- **Repetição que dói.** Criar recurso no Coolify virar rotina semanal em vez de
+  evento de projeto novo.
+- **Um segundo destino querendo o mesmo.** Se aparecer um `deploy-dokploy` com a
+  mesma forma, o certo deixa de ser dois verbos e passa a ser **um** —
+  `deploy-target create --provider coolify|dokploy …` — e aí a abstração é
+  honesta, porque nasce de dois casos e não de um.
+- **Idempotência virar necessidade.** Hoje "rodar duas vezes cria dois recursos"
+  é um aviso num doc. Se alguém fizer isso em produção, deixa de ser aviso.
+
+Se reabrir, a forma é a segunda: **verbo com destino como parâmetro**, nunca um
+verbo por produto.
+
+---
+
 ## Armadilhas
 
 | Sintoma | Causa |
