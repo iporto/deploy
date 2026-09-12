@@ -189,7 +189,7 @@ EOF
 | `harden-vm` | Fecha a superfície de rede da VM: ufw, `DOCKER-USER`, fail2ban, SSH por chave |
 | `deploy-wizard` | Assistente interativo — guia a instalação do começo ao fim |
 | `deploy-doctor` | Verifica se a máquina consegue rodar o ambiente — rode **antes** de tudo |
-| `deploy-mutagen` | As sessões de sincronia de todos os apps do projeto, de uma vez |
+| `deploy-mutagen` | As sessões de sincronia dos apps do projeto — todas de uma vez, ou uma só |
 | `deploy-audit` | Varre vários projetos procurando env em texto puro, porta exposta, `chmod 777` |
 | `deploy-token-check` | Diagnostica o token de acesso ao registry |
 | `deploy-shim-install` | Instala os verbos num projeto (acima) |
@@ -880,16 +880,41 @@ deploy-shim-install . --apply --verbs deploy-mutagen
 
 ```bash
 ./deploy-mutagen            # status (padrão)
-./deploy-mutagen start      # inicia as que estão paradas
+./deploy-mutagen start      # inicia as que estão paradas e retoma as pausadas
 ./deploy-mutagen stop       # termina as deste projeto
+./deploy-mutagen pause      # suspende a sincronia, mantendo as sessões
+./deploy-mutagen resume     # retoma o que está pausado
 ```
 
 ```
 Apps em code/
   ✓ api.spelt.com.br      spelt-api    Watching
+  ‖ app.spelt.com.br      spelt-app    pausada
   ○ www.spelt.com.br      spelt-www    parada
   — starter-kit…          sem mutagen.yml
 ```
+
+Todo verbo aceita **um app** como segundo argumento, para mexer em um sem mexer
+nos outros — útil quando um `composer install` ou um `npm ci` faz a sincronia
+daquele app remar contra você:
+
+```bash
+./deploy-mutagen pause api                  # prefixo basta
+./deploy-mutagen resume api.spelt.com.br    # ou o nome inteiro
+./deploy-mutagen stop code/api.spelt.com.br/   # ou o caminho, do tab completion
+./deploy-mutagen status api                 # a tabela também filtra
+```
+
+O app é resolvido por nome exato, prefixo ou trecho contido — nessa ordem. Se o
+termo couber em mais de um app, o comando **para e lista os candidatos** em vez
+de escolher por você: pausar o app errado é silencioso, e só aparece quando o
+código deixa de chegar na VM.
+
+> **Pausar não é parar.** O `pause` suspende a sincronia e mantém a sessão — o
+> `resume` volta de onde parou. O `stop` termina a sessão; o `start` recria do
+> zero, com o rescan inteiro da árvore. Sessão pausada continua na lista do
+> Mutagen com status `Disconnected`, e é o `status` deste comando que a mostra
+> como `‖ pausada`, em vez de pintar de verde algo que não sincroniza há dias.
 
 > [!WARNING]
 > **O namespace de sessão do Mutagen é global.** Dois projetos que declarem o

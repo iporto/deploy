@@ -2,28 +2,49 @@
 set -uo pipefail
 
 ################################################################################
-# deploy-mutagen — as sessões de sincronia deste projeto, de uma vez
+# deploy-mutagen — as sessões de sincronia deste projeto
 #
 # Com daemon Docker REMOTO, os bind mounts leem o filesystem da VM. A
 # configuração chega lá pelo deploy-sync; o CÓDIGO dos apps chega pelo Mutagen,
 # contínuo. Sem ele, code/<app> não existe na VM e o container sobe sobre um
 # diretório vazio — ver a guarda de bind mount no deploy-run.
 #
-# Cada app tem o próprio mutagen.yml em code/<app>/. Este comando age sobre
-# todos de uma vez, em vez de entrar num por um.
+# Cada app tem o próprio mutagen.yml em code/<app>/. Sem APP, o comando age
+# sobre todos de uma vez; com APP, só sobre aquele.
 #
-# Uso:  ./deploy-mutagen [status|start|stop]
+# Uso:  ./deploy-mutagen [status|start|stop|pause|resume] [APP]
 #   status  (padrão)  o que cada app está fazendo, e o que está fora do lugar
-#   start             inicia as sessões que ainda não existem
-#   stop              termina as sessões deste projeto
+#   start             inicia as sessões que faltam e retoma as pausadas
+#   stop              termina as sessões (o start recria do zero)
+#   pause             suspende a sincronia mantendo a sessão
+#   resume            retoma o que está pausado
+#
+# APP é o diretório em code/ — o nome inteiro, um prefixo dele ou o caminho,
+# para o tab completion do shell servir:
+#   ./deploy-mutagen pause api
+#   ./deploy-mutagen start api.iporto.com.br
+#   ./deploy-mutagen stop  code/api.iporto.com.br/
 ################################################################################
 
-case "${1:-}" in -h|--help) sed -n '4,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+case "${1:-}" in
+  # A ajuda é o cabeçalho: o bloco entre as duas réguas de #. Ler por estado,
+  # e não por número de linha, sobrevive a editar o cabeçalho.
+  -h|--help) awk '/^#{10,}/{n++; next} n==1{sub(/^# ?/,""); print} n>1{exit}' "$0"; exit 0 ;;
+esac
 
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
 BLUE=$'\033[0;34m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; NC=$'\033[0m'
 
 CMD="${1:-status}"
+ALVO="${2:-}"
+
+# Um terceiro argumento seria ignorado em silêncio — e quem escreveu
+# `pause api sms` esperava dois apps pausados, não um.
+if [[ $# -gt 2 ]]; then
+  echo "${RED}Argumentos demais.${NC} Um comando e, no máximo, um app." >&2
+  echo "Use: ./deploy-mutagen [status|start|stop|pause|resume] [APP]" >&2
+  exit 2
+fi
 
 command -v mutagen >/dev/null 2>&1 || {
   echo "${RED}mutagen não encontrado.${NC}" >&2
@@ -35,6 +56,63 @@ command -v mutagen >/dev/null 2>&1 || {
   exit 1
 }
 
+# Resolve o termo (nome do diretório, prefixo ou caminho) em UM app de code/.
+# Ambiguidade não vira escolha arbitrária: pausar o app errado é silencioso, e
+# só se descobre quando o código para de chegar na VM.
+_resolver_app() {
+  local termo="$1" app
+  local exatos='' prefixos='' contidos='' achados=''
+  termo="${termo#./}"; termo="${termo#code/}"; termo="${termo%/}"
+  for d in code/*/; do
+    [[ -d "$d" ]] || continue
+    app="$(basename "$d")"
+    if   [[ "$app" == "$termo"    ]]; then exatos+="$app"$'\n'
+    elif [[ "$app" == "$termo"*   ]]; then prefixos+="$app"$'\n'
+    elif [[ "$app" == *"$termo"*  ]]; then contidos+="$app"$'\n'
+    fi
+  done
+  if   [[ -n "$exatos"   ]]; then achados="$exatos"
+  elif [[ -n "$prefixos" ]]; then achados="$prefixos"
+  elif [[ -n "$contidos" ]]; then achados="$contidos"
+  fi
+
+  if [[ -z "$achados" ]]; then
+    echo "${RED}Nenhum app em code/ corresponde a '${termo}'.${NC}" >&2
+    echo "${DIM}  Há:${NC}" >&2
+    for d in code/*/; do [[ -d "$d" ]] && echo "    $(basename "$d")" >&2; done
+    return 1
+  fi
+  if [[ "$(printf '%s' "$achados" | grep -c .)" -gt 1 ]]; then
+    echo "${RED}'${termo}' corresponde a mais de um app:${NC}" >&2
+    printf '%s' "$achados" | sed 's/^/    /' >&2
+    echo "${DIM}  Escreva o suficiente para distinguir.${NC}" >&2
+    return 2
+  fi
+  printf '%s\n' "$achados" | head -1
+}
+
+case "$CMD" in
+  status|start|stop|pause|resume) ;;
+  *)
+    echo "${RED}Comando desconhecido: ${CMD}${NC}" >&2
+    # Um app no lugar do verbo é o engano provável de quem já sabe o nome do app.
+    if sugerido="$(_resolver_app "$CMD" 2>/dev/null)"; then
+      echo "${DIM}  Talvez:  ./deploy-mutagen status ${sugerido}${NC}" >&2
+    fi
+    echo "Use: status | start | stop | pause | resume  [APP]" >&2
+    exit 2 ;;
+esac
+
+# Apps sobre os quais este comando age. Com ALVO, é um só — e o filtro vale
+# tanto para a tabela quanto para a ação, para o que se lê ser o que se muda.
+APPS=''
+if [[ -n "$ALVO" ]]; then
+  APPS="$(_resolver_app "$ALVO")" || exit $?
+  APPS="$APPS"$'\n'
+else
+  for d in code/*/; do [[ -d "$d" ]] && APPS+="$(basename "$d")"$'\n'; done
+fi
+
 # Com daemon local o código já está onde o Docker lê — sincronizar não tem alvo.
 # Não bloqueia: alguém pode manter sessões por outro motivo.
 case "$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" in
@@ -45,22 +123,26 @@ case "$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null
     ;;
 esac
 
-# Sessões ativas: nome → caminho do alpha. É o que revela sessão com o nome
-# certo apontando para o projeto ERRADO.
-ATIVAS="$(mutagen sync list --template '{{range .}}{{.Name}}|{{.Status}}|{{.Alpha.Path}}{{"\n"}}{{end}}' 2>/dev/null || true)"
+# Sessões ativas: nome → status, pausa, caminho do alpha. É o que revela sessão
+# com o nome certo apontando para o projeto ERRADO.
+#
+# ⚠️ Pausada, a sessão continua na lista e o .Status vira "Disconnected" — não
+#    "Paused". Só o .Paused distingue pausa deliberada de queda de conexão, e
+#    sem ele o status pintaria de verde algo que não sincroniza há dias.
+ATIVAS="$(mutagen sync list --template '{{range .}}{{.Name}}|{{.Status}}|{{.Paused}}|{{.Alpha.Path}}{{"\n"}}{{end}}' 2>/dev/null || true)"
 
 _nome_declarado() { grep -oE '^  [a-z][a-z0-9_-]+:' "$1" 2>/dev/null | grep -v defaults | head -1 | tr -d ' :'; }
 _sessao()         { printf '%s\n' "$ATIVAS" | awk -F'|' -v n="$1" '$1==n {print; exit}'; }
+_cada_app()       { printf '%s' "$APPS" | grep -v '^$'; }
 
 ################################################################################
 titulo() { printf '\n%s%s%s\n' "$BOLD" "$1" "$NC"; }
-AVISOS=0
+AVISOS=0; PARADAS=0; PAUSADAS=0
 
-titulo "Apps em code/"
+if [[ -n "$ALVO" ]]; then titulo "App em code/"; else titulo "Apps em code/"; fi
 COM_YML=0
-for d in code/*/; do
-  [[ -d "$d" ]] || continue
-  app="$(basename "$d")"
+while IFS= read -r app; do
+  d="code/$app"
   if [[ ! -f "$d/mutagen.yml" ]]; then
     printf '  %s—%s %-34s %ssem mutagen.yml%s\n' "$DIM" "$NC" "$app" "$DIM" "$NC"
     continue
@@ -69,12 +151,13 @@ for d in code/*/; do
   nome="$(_nome_declarado "$d/mutagen.yml")"
   linha="$(_sessao "$nome")"
   status="$(printf '%s' "$linha" | cut -d'|' -f2)"
-  alpha="$(printf '%s' "$linha" | cut -d'|' -f3)"
+  pausada="$(printf '%s' "$linha" | cut -d'|' -f3)"
+  alpha="$(printf '%s' "$linha" | cut -d'|' -f4)"
   aqui="$(cd "$d" && pwd)"
 
   if [[ -z "$linha" ]]; then
     printf '  %s○%s %-34s %s%s%s  %sparada%s\n' "$YELLOW" "$NC" "$app" "$DIM" "$nome" "$NC" "$YELLOW" "$NC"
-    AVISOS=$((AVISOS+1))
+    PARADAS=$((PARADAS+1)); AVISOS=$((AVISOS+1))
   elif [[ "$alpha" != "$aqui" ]]; then
     # ⚠️ O namespace do Mutagen é GLOBAL. Dois projetos declarando o mesmo nome
     #    disputam a mesma sessão, e quem perde sincroniza o diretório do outro —
@@ -82,10 +165,18 @@ for d in code/*/; do
     printf '  %s✗%s %-34s %s%s%s  %sSINCRONIZA OUTRO DIRETÓRIO%s\n' "$RED" "$NC" "$app" "$DIM" "$nome" "$NC" "$RED" "$NC"
     printf '      %salpha ativo: %s%s\n' "$DIM" "$alpha" "$NC"
     AVISOS=$((AVISOS+1))
+  elif [[ "$pausada" == "true" ]]; then
+    printf '  %s‖%s %-34s %s%s%s  %spausada%s\n' "$YELLOW" "$NC" "$app" "$DIM" "$nome" "$NC" "$YELLOW" "$NC"
+    PAUSADAS=$((PAUSADAS+1)); AVISOS=$((AVISOS+1))
   else
     printf '  %s✓%s %-34s %s%s%s  %s\n' "$GREEN" "$NC" "$app" "$DIM" "$nome" "$NC" "$status"
   fi
-done
+done < <(_cada_app)
+
+# Com filtro, as dicas têm de repetir o app: um `./deploy-mutagen start` solto
+# agiria sobre o projeto inteiro, que não foi o que se pediu.
+QUAL=''
+if [[ -n "$ALVO" ]]; then QUAL=" $(_cada_app)"; fi
 
 case "$CMD" in
   status)
@@ -97,7 +188,9 @@ case "$CMD" in
       printf '%s  Cada app precisa do próprio mutagen.yml em code/<app>/.%s\n' "$DIM" "$NC"
       printf '%s  Há um mutagen.yml.example nos apps gerados pelo kit.%s\n' "$DIM" "$NC"
     elif [[ $AVISOS -gt 0 ]]; then
-      printf '\n%s%d ponto(s) de atenção.%s  Para iniciar as paradas: ./deploy-mutagen start\n' "$YELLOW" "$AVISOS" "$NC"
+      printf '\n%s%d ponto(s) de atenção.%s\n' "$YELLOW" "$AVISOS" "$NC"
+      if [[ $PARADAS  -gt 0 ]]; then printf '  Para iniciar as paradas:  ./deploy-mutagen start%s\n' "$QUAL"; fi
+      if [[ $PAUSADAS -gt 0 ]]; then printf '  Para retomar as pausadas: ./deploy-mutagen resume%s\n' "$QUAL"; fi
     else
       printf '\n%sTudo sincronizando%s — %d app(s).\n' "$GREEN" "$NC" "$COM_YML"
     fi
@@ -105,21 +198,36 @@ case "$CMD" in
 
   start)
     titulo "Iniciando"
-    for d in code/*/; do
-      [[ -f "$d/mutagen.yml" ]] || continue
-      app="$(basename "$d")"; nome="$(_nome_declarado "$d/mutagen.yml")"
+    while IFS= read -r app; do
+      d="code/$app"
+      if [[ ! -f "$d/mutagen.yml" ]]; then
+        if [[ -n "$ALVO" ]]; then
+          printf '  %s—%s %-34s sem mutagen.yml — nada a fazer\n' "$DIM" "$NC" "$app"
+        fi
+        continue
+      fi
+      nome="$(_nome_declarado "$d/mutagen.yml")"
       linha="$(_sessao "$nome")"
       if [[ -n "$linha" ]]; then
-        alpha="$(printf '%s' "$linha" | cut -d'|' -f3)"; aqui="$(cd "$d" && pwd)"
-        if [[ "$alpha" == "$aqui" ]]; then
-          printf '  %s=%s %-34s já ativa\n' "$BLUE" "$NC" "$app"
-        else
+        pausada="$(printf '%s' "$linha" | cut -d'|' -f3)"
+        alpha="$(printf '%s' "$linha" | cut -d'|' -f4)"; aqui="$(cd "$d" && pwd)"
+        if [[ "$alpha" != "$aqui" ]]; then
           # ⚠️ "já ativa" aqui seria mentira perigosa: a sessão existe, mas com
           #    o alpha em OUTRO diretório. Pular calado deixaria este app sem
           #    sincronia nenhuma, com o comando reportando sucesso.
           printf '  %s✗%s %-34s nome %s%s%s já usado por outro diretório\n' "$RED" "$NC" "$app" "$BOLD" "$nome" "$NC"
           printf '      %sativo em: %s%s\n' "$DIM" "$alpha" "$NC"
-          printf '      %srenomeie a sessão em %smutagen.yml%s — o namespace do Mutagen é global\n' "$DIM" "$d" "$NC"
+          printf '      %srenomeie a sessão em %s/mutagen.yml%s — o namespace do Mutagen é global\n' "$DIM" "$d" "$NC"
+        elif [[ "$pausada" == "true" ]]; then
+          # Pedir start sobre sessão pausada é pedir que ela volte a sincronizar.
+          # Dizer "já ativa" e não fazer nada seria o resultado oposto do pedido.
+          if ( cd "$d" && mutagen project resume >/dev/null 2>&1 </dev/null ) || mutagen sync resume "$nome" >/dev/null 2>&1 </dev/null; then
+            printf '  %s+%s %-34s retomada (estava pausada)\n' "$GREEN" "$NC" "$app"
+          else
+            printf '  %s✗%s %-34s falhou ao retomar\n' "$RED" "$NC" "$app"
+          fi
+        else
+          printf '  %s=%s %-34s já ativa\n' "$BLUE" "$NC" "$app"
         fi
         continue
       fi
@@ -130,41 +238,83 @@ case "$CMD" in
         printf '  %s!%s %-34s lock órfão — removendo\n' "$YELLOW" "$NC" "$app"
         rm -f "$d/mutagen.yml.lock"
       fi
-      if ( cd "$d" && mutagen project start >/dev/null 2>&1 ); then
+      if ( cd "$d" && mutagen project start >/dev/null 2>&1 </dev/null ); then
         printf '  %s+%s %-34s iniciada (%s)\n' "$GREEN" "$NC" "$app" "$nome"
       else
         printf '  %s✗%s %-34s falhou — veja: cd %s && mutagen project start\n' "$RED" "$NC" "$app" "$d"
       fi
-    done
+    done < <(_cada_app)
     ;;
 
-  stop)
-    titulo "Terminando"
-    for d in code/*/; do
-      [[ -f "$d/mutagen.yml" ]] || continue
-      app="$(basename "$d")"; nome="$(_nome_declarado "$d/mutagen.yml")"
-      linha="$(_sessao "$nome")"; alpha="$(printf '%s' "$linha" | cut -d'|' -f3)"
-      aqui="$(cd "$d" && pwd)"
-      if [[ -z "$linha" ]]; then
-        printf '  %s=%s %-34s já parada\n' "$BLUE" "$NC" "$app"; continue
-      fi
-      # ⚠️ Não termina sessão cujo alpha aponta para OUTRO diretório: o nome pode
-      #    colidir com o de outro projeto, e derrubar a sincronia dele seria um
-      #    efeito colateral silencioso.
-      if [[ "$alpha" != "$aqui" ]]; then
-        printf '  %s✗%s %-34s NÃO terminada — a sessão é de %s\n' "$RED" "$NC" "$app" "$alpha"
+  stop|pause|resume)
+    case "$CMD" in
+      stop)   titulo "Terminando" ;;
+      pause)  titulo "Pausando"   ;;
+      resume) titulo "Retomando"  ;;
+    esac
+    while IFS= read -r app; do
+      d="code/$app"
+      if [[ ! -f "$d/mutagen.yml" ]]; then
+        if [[ -n "$ALVO" ]]; then
+          printf '  %s—%s %-34s sem mutagen.yml — nada a fazer\n' "$DIM" "$NC" "$app"
+        fi
         continue
       fi
-      if ( cd "$d" && mutagen project terminate >/dev/null 2>&1 ); then
-        printf '  %s-%s %-34s terminada\n' "$GREEN" "$NC" "$app"
-      else
-        mutagen sync terminate "$nome" >/dev/null 2>&1 \
-          && printf '  %s-%s %-34s terminada (pela sessão)\n' "$GREEN" "$NC" "$app" \
-          || printf '  %s✗%s %-34s falhou\n' "$RED" "$NC" "$app"
-      fi
-    done
-    ;;
+      nome="$(_nome_declarado "$d/mutagen.yml")"
+      linha="$(_sessao "$nome")"
+      pausada="$(printf '%s' "$linha" | cut -d'|' -f3)"
+      alpha="$(printf '%s' "$linha" | cut -d'|' -f4)"
+      aqui="$(cd "$d" && pwd)"
 
-  *) echo "${RED}Comando desconhecido: ${CMD}${NC}" >&2
-     echo "Use: status | start | stop" >&2; exit 2 ;;
+      if [[ -z "$linha" ]]; then
+        case "$CMD" in
+          stop)   printf '  %s=%s %-34s já parada\n' "$BLUE" "$NC" "$app" ;;
+          pause)  printf '  %s=%s %-34s sem sessão — nada a pausar\n' "$BLUE" "$NC" "$app" ;;
+          resume) printf '  %s○%s %-34s parada — inicie com: ./deploy-mutagen start %s\n' "$YELLOW" "$NC" "$app" "$app" ;;
+        esac
+        continue
+      fi
+      # ⚠️ Não toca em sessão cujo alpha aponta para OUTRO diretório: o nome pode
+      #    colidir com o de outro projeto, e parar a sincronia dele seria um
+      #    efeito colateral silencioso.
+      if [[ "$alpha" != "$aqui" ]]; then
+        printf '  %s✗%s %-34s NÃO alterada — a sessão é de %s\n' "$RED" "$NC" "$app" "$alpha"
+        continue
+      fi
+
+      case "$CMD" in
+        stop)
+          if ( cd "$d" && mutagen project terminate >/dev/null 2>&1 </dev/null ); then
+            printf '  %s-%s %-34s terminada\n' "$GREEN" "$NC" "$app"
+          else
+            mutagen sync terminate "$nome" >/dev/null 2>&1 </dev/null \
+              && printf '  %s-%s %-34s terminada (pela sessão)\n' "$GREEN" "$NC" "$app" \
+              || printf '  %s✗%s %-34s falhou\n' "$RED" "$NC" "$app"
+          fi
+          ;;
+        pause)
+          if [[ "$pausada" == "true" ]]; then
+            printf '  %s=%s %-34s já pausada\n' "$BLUE" "$NC" "$app"; continue
+          fi
+          # O `project pause` depende do lock; sem ele, a sessão ainda responde
+          # pelo nome — e é o mesmo alvo, já conferido pelo alpha acima.
+          if ( cd "$d" && mutagen project pause >/dev/null 2>&1 </dev/null ) || mutagen sync pause "$nome" >/dev/null 2>&1 </dev/null; then
+            printf '  %s‖%s %-34s pausada  %sretome com: ./deploy-mutagen resume %s%s\n' "$YELLOW" "$NC" "$app" "$DIM" "$app" "$NC"
+          else
+            printf '  %s✗%s %-34s falhou ao pausar\n' "$RED" "$NC" "$app"
+          fi
+          ;;
+        resume)
+          if [[ "$pausada" != "true" ]]; then
+            printf '  %s=%s %-34s já ativa\n' "$BLUE" "$NC" "$app"; continue
+          fi
+          if ( cd "$d" && mutagen project resume >/dev/null 2>&1 </dev/null ) || mutagen sync resume "$nome" >/dev/null 2>&1 </dev/null; then
+            printf '  %s+%s %-34s retomada\n' "$GREEN" "$NC" "$app"
+          else
+            printf '  %s✗%s %-34s falhou ao retomar\n' "$RED" "$NC" "$app"
+          fi
+          ;;
+      esac
+    done < <(_cada_app)
+    ;;
 esac
