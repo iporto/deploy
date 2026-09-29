@@ -5,23 +5,28 @@ set -uo pipefail
 # deploy-infra — sobe a infra de desenvolvimento compartilhada
 #
 # Cria a rede `shared` e os serviços que todo projeto espera achar nela:
-# Traefik (roteamento), MariaDB, Redis e Mailpit.
+# Traefik (roteamento), MariaDB, Redis e Mailpit. Opcionais, ligados por
+# INFRA_EXTRAS no infra/.env.dev: MinIO (s3) e Meilisearch (search).
 #
 # Sobe UMA vez por máquina — ou por contexto Docker, que dá no mesmo: o comando
 # respeita o contexto ativo. Contexto local sobe na sua máquina; um contexto
 # ssh:// sobe na VM. Os projetos não mudam nada por causa disso.
 #
 # Uso:  ./deploy-infra <comando> [--context NOME]
-#   up        cria a rede e sobe os serviços
-#   createdb  cria database + usuário + senha para um projeto
-#   down      derruba, PRESERVANDO os volumes (os dados ficam)
-#   status    o que está no ar e em qual contexto
-#   logs      acompanha os logs
-#   reset     derruba E APAGA os volumes — o banco volta do zero
+#   up            cria a rede e sobe os serviços
+#   createdb      cria database + usuário + senha para um projeto
+#   createbucket  cria um bucket no MinIO (exige o extra s3)
+#   down          derruba, PRESERVANDO os volumes (os dados ficam)
+#   status        o que está no ar e em qual contexto
+#   logs          acompanha os logs
+#   reset         derruba E APAGA os volumes — o banco volta do zero
 #
 # Uso do createdb:  ./deploy-infra createdb <nome> [--print-env] [--password P]
 #   Cria o database, um usuário homônimo e o grant. Sem --password, gera uma.
 #   Com --print-env, imprime só as 4 linhas prontas para o .env do app.
+#
+# Uso do createbucket:  ./deploy-infra createbucket <nome> [--public] [--print-env]
+#   --public libera leitura anônima (URLs de arquivo abrem no navegador).
 #
 # Uso do reset:     ./deploy-infra reset [--force]
 #   --force pula a confirmação — só para quem já confirmou antes.
@@ -35,21 +40,22 @@ print_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
 print_warning() { echo -e "${YELLOW}[AVISO]${NC} $*"; }
 
 CMD="${1:-}"; shift 2>/dev/null || true
-CONTEXT=""; DB_NAME=""; DB_PASS=""; PRINT_ENV=false; FORCE=false
+CONTEXT=""; DB_NAME=""; DB_PASS=""; PRINT_ENV=false; FORCE=false; PUBLIC=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --context)    CONTEXT="$2"; shift 2 ;;
     --password)   DB_PASS="$2"; shift 2 ;;
     --print-env)  PRINT_ENV=true; shift ;;
     --force)      FORCE=true; shift ;;
+    --public)     PUBLIC=true; shift ;;
     -*) print_error "Opção desconhecida: $1"; exit 2 ;;
     *)  DB_NAME="$1"; shift ;;
   esac
 done
 case "$CMD" in
-  -h|--help|'') sed -n '5,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-  up|down|status|logs|reset|createdb) ;;
-  *) print_error "Comando inválido: ${CMD}"; echo "Use: up | createdb | down | status | logs | reset" >&2; exit 2 ;;
+  -h|--help|'') sed -n '5,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  up|down|status|logs|reset|createdb|createbucket) ;;
+  *) print_error "Comando inválido: ${CMD}"; echo "Use: up | createdb | createbucket | down | status | logs | reset" >&2; exit 2 ;;
 esac
 
 _scripts_dir() {
@@ -92,6 +98,38 @@ if ! $PRINT_ENV; then
 fi
 
 ENV_FILE="$DIR/.env.dev"
+
+# Lê KEY do .env.dev sem as aspas: KEY="" tem conteúdo para o grep, mas é vazio.
+_env_get() {
+  [[ -f "$ENV_FILE" ]] || return 0
+  grep -E "^${1}=" "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true
+}
+
+# ─── Serviços opcionais ──────────────────────────────────────────────────────
+#
+# INFRA_EXTRAS lista os extras; cada um é um profile do compose e cobra a
+# própria senha. `up` sobe só os ligados. down/status/logs/reset enxergam TODOS
+# os profiles: quem tirou um extra da lista ainda precisa conseguir derrubá-lo —
+# sem isso o container ficaria de pé, fora do alcance do comando.
+#
+# ⚠️ Pares "extra:chave" em vez de `declare -A`: o bash do macOS é o 3.2, que
+#    não tem array associativo.
+EXTRA_DEFS=("s3:MINIO_ROOT_PASSWORD" "search:MEILI_MASTER_KEY")
+_extra_key() { local d; for d in "${EXTRA_DEFS[@]}"; do [[ "${d%%:*}" == "$1" ]] && { echo "${d#*:}"; return 0; }; done; return 1; }
+
+EXTRAS=()
+for _x in $(_env_get INFRA_EXTRAS | tr ',' ' '); do
+  if ! _extra_key "$_x" >/dev/null; then
+    print_error "INFRA_EXTRAS: extra desconhecido '${_x}' em ${ENV_FILE}"
+    print_info  "Disponíveis: s3 search"
+    exit 2
+  fi
+  EXTRAS+=("$_x")
+done
+PROFILES_ON=();  for _x in ${EXTRAS[@]+"${EXTRAS[@]}"}; do PROFILES_ON+=(--profile "$_x"); done
+PROFILES_ALL=(); for _d in "${EXTRA_DEFS[@]}";          do PROFILES_ALL+=(--profile "${_d%%:*}"); done
+_extra_on() { local x; for x in ${EXTRAS[@]+"${EXTRAS[@]}"}; do [[ "$x" == "$1" ]] && return 0; done; return 1; }
+
 _require_env() {
   if [[ ! -f "$ENV_FILE" ]]; then
     cp "$DIR/.env.dev.example" "$ENV_FILE"
@@ -101,14 +139,15 @@ _require_env() {
   fi
   # ⚠️ Tira as aspas antes de julgar: KEY="" tem conteúdo para o grep, mas é
   #    valor vazio. Sem isto o guard deixa passar um template não preenchido.
-  local faltando=() v
-  for k in MYSQL_ROOT_PASSWORD REDIS_PASSWORD; do
-    v="$(grep -E "^${k}=" "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
-    [[ -n "$v" ]] || faltando+=("$k")
+  local faltando=() k x
+  local obrigatorias=(MYSQL_ROOT_PASSWORD REDIS_PASSWORD)
+  for x in ${EXTRAS[@]+"${EXTRAS[@]}"}; do obrigatorias+=("$(_extra_key "$x")"); done
+  for k in "${obrigatorias[@]}"; do
+    [[ -n "$(_env_get "$k")" ]] || faltando+=("$k")
   done
   if [[ ${#faltando[@]} -gt 0 ]]; then
     print_error "Sem valor em ${ENV_FILE}: ${faltando[*]}"
-    print_info  "São senhas locais suas — invente e preencha."
+    print_info  "São senhas locais suas. Gere cada uma com: openssl rand -hex 24"
     exit 1
   fi
 }
@@ -118,15 +157,24 @@ case "$CMD" in
   up)
     _require_env
     print_info "Subindo a infra..."
-    "${DC[@]}" up -d --remove-orphans || { print_error "Falha ao subir"; exit 1; }
+    [[ ${#EXTRAS[@]} -gt 0 ]] && print_info "Extras: ${EXTRAS[*]}"
+    "${DC[@]}" ${PROFILES_ON[@]+"${PROFILES_ON[@]}"} up -d --remove-orphans || { print_error "Falha ao subir"; exit 1; }
     echo
-    "${DC[@]}" ps --format 'table {{.Name}}\t{{.Status}}' 2>/dev/null || "${DC[@]}" ps
+    "${DC[@]}" "${PROFILES_ALL[@]}" ps --format 'table {{.Name}}\t{{.Status}}' 2>/dev/null || "${DC[@]}" ps
     echo
     print_success "Rede 'shared' criada e infra no ar."
     src_port=$(grep -E '^TRAEFIK_DASHBOARD_PORT=' "$ENV_FILE" | cut -d= -f2); src_port="${src_port:-8080}"
     mail_port=$(grep -E '^MAILPIT_WEB_PORT=' "$ENV_FILE" | cut -d= -f2); mail_port="${mail_port:-8025}"
     print_info "Traefik:  http://127.0.0.1:${src_port}   (dashboard, só loopback)"
     print_info "Mailpit:  http://127.0.0.1:${mail_port}"
+    if _extra_on s3; then
+      p="$(_env_get MINIO_CONSOLE_PORT)"; u="$(_env_get MINIO_ROOT_USER)"
+      print_info "MinIO:    http://127.0.0.1:${p:-9001}   (console, usuário ${u:-minio})"
+    fi
+    if _extra_on search; then
+      p="$(_env_get MEILI_PORT)"
+      print_info "Meili:    http://127.0.0.1:${p:-7700}"
+    fi
     if [[ -z "${DEPLOY_WIZARD:-}" ]]; then
       echo
       echo "${BOLD}Próximo passo${NC} — criar o banco do seu produto:"
@@ -135,11 +183,12 @@ case "$CMD" in
     ;;
   down)
     print_info "Derrubando (os volumes ficam)..."
-    "${DC[@]}" down && print_success "Infra parada. Os dados foram preservados."
+    "${DC[@]}" "${PROFILES_ALL[@]}" down && print_success "Infra parada. Os dados foram preservados."
     ;;
   status)
-    "${DC[@]}" ps --format 'table {{.Name}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || "${DC[@]}" ps
+    "${DC[@]}" "${PROFILES_ALL[@]}" ps --format 'table {{.Name}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || "${DC[@]}" ps
     echo
+    print_info "Extras ligados: ${EXTRAS[*]:-nenhum}  (INFRA_EXTRAS em ${ENV_FILE})"
     if docker network inspect shared >/dev/null 2>&1; then
       print_success "Rede 'shared' existe."
     else
@@ -152,9 +201,11 @@ case "$CMD" in
       print_error "Falta o nome: ./deploy-infra createdb <nome>"; exit 2
     fi
     # Nome vira identificador SQL — restringe para não precisar escapar nada.
-    if [[ ! "$DB_NAME" =~ ^[a-z][a-z0-9_]{0,30}$ ]]; then
+    # 64 é o teto do MySQL para nome de database. O usuário homônimo cabe porque
+    # a infra é MariaDB (até 80); num MySQL puro o teto de usuário seria 32.
+    if [[ ! "$DB_NAME" =~ ^[a-z][a-z0-9_]{0,63}$ ]]; then
       print_error "Nome inválido: '${DB_NAME}'"
-      print_info  "Use minúsculas, números e _, começando por letra (até 31 chars)."
+      print_info  "Use minúsculas, números e _, começando por letra (até 64 chars)."
       exit 2
     fi
     # Tira as aspas: o template usa KEY="valor" por convenção, e sem remover
@@ -244,9 +295,62 @@ FLUSH PRIVILEGES;"
       print_info "  deploy-scaffold-project <dominio> --from-kit <caminho> --apply"
     fi
     ;;
-  logs) "${DC[@]}" logs -f --tail=100 ;;
+  createbucket)
+    _require_env
+    BUCKET="$DB_NAME"
+    if ! _extra_on s3; then
+      print_error "O extra s3 não está ligado."
+      print_info  "Acrescente 's3' a INFRA_EXTRAS em ${ENV_FILE}, preencha MINIO_ROOT_PASSWORD e rode: deploy-infra up"
+      exit 1
+    fi
+    [[ -n "$BUCKET" ]] || { print_error "Falta o nome: ./deploy-infra createbucket <nome>"; exit 2; }
+    # Regra de nome do S3: 3 a 63 chars — minúsculas, números, ponto e hífen.
+    if [[ ! "$BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
+      print_error "Nome de bucket inválido: '${BUCKET}'"
+      print_info  "Use 3 a 63 caracteres: minúsculas, números, ponto e hífen."
+      exit 2
+    fi
+    if ! docker ${CONTEXT:+--context "$CONTEXT"} ps --filter 'name=^infra-s3$' --format '{{.Names}}' 2>/dev/null | grep -q infra-s3; then
+      print_error "O container infra-s3 não está no ar."
+      print_info  "Rode antes: deploy-infra up"
+      exit 1
+    fi
+    m_user="$(_env_get MINIO_ROOT_USER)"; m_user="${m_user:-minio}"
+    m_pass="$(_env_get MINIO_ROOT_PASSWORD)"
+    # A credencial entra por variável de ambiente do exec, não por argumento:
+    # argumento aparece na lista de processos do container.
+    _mc() {
+      docker ${CONTEXT:+--context "$CONTEXT"} exec \
+        -e MC_HOST_local="http://${m_user}:${m_pass}@localhost:9000" infra-s3 mc "$@"
+    }
+    # Mesmo motivo do createdb: o MinIO leva alguns segundos para aceitar
+    # conexão depois do `up`, e o erro culparia a credencial.
+    for _i in $(seq 1 30); do _mc ls local >/dev/null 2>&1 && break; sleep 2; done
+    if ! erro_mc="$(_mc mb --ignore-existing "local/${BUCKET}" 2>&1)"; then
+      print_error "Falha ao criar o bucket '${BUCKET}': ${erro_mc//$m_pass/***}"
+      print_info  "Confira MINIO_ROOT_USER e MINIO_ROOT_PASSWORD em ${ENV_FILE}." >&2
+      exit 1
+    fi
+    if $PUBLIC && ! _mc anonymous set download "local/${BUCKET}" >/dev/null 2>&1; then
+      print_warning "Bucket criado, mas a leitura pública falhou." >&2
+    fi
+    # Credencial root do MinIO no app: aceitável só porque é dev local.
+    lines="AWS_ACCESS_KEY_ID=${m_user}
+AWS_SECRET_ACCESS_KEY=${m_pass}
+AWS_DEFAULT_REGION=us-east-1
+AWS_BUCKET=${BUCKET}
+AWS_ENDPOINT=http://infra-s3:9000
+AWS_USE_PATH_STYLE_ENDPOINT=true"
+    if $PRINT_ENV; then printf '%s\n' "$lines"; exit 0; fi
+    $PUBLIC && print_success "Bucket '${BUCKET}' pronto, com leitura pública." \
+            || print_success "Bucket '${BUCKET}' pronto."
+    echo
+    echo "Cole no .env do app:"
+    printf '%s\n' "$lines" | sed 's/^/  /'
+    ;;
+  logs) "${DC[@]}" "${PROFILES_ALL[@]}" logs -f --tail=100 ;;
   reset)
-    print_warning "Isto APAGA os volumes: banco, cache e e-mails locais somem."
+    print_warning "Isto APAGA os volumes: banco, cache, e-mails, arquivos do S3 e índices de busca somem."
     # --force existe para quem JÁ confirmou noutro lugar (o assistente pergunta
     # com o que será perdido escrito na tela). Pedir de novo logo em seguida
     # treina a pessoa a digitar 'apagar' no reflexo, que é o oposto do objetivo.
@@ -254,6 +358,6 @@ FLUSH PRIVILEGES;"
       read -r -p "Digite 'apagar' para confirmar: " ok
       [[ "$ok" == "apagar" ]] || { print_info "Cancelado."; exit 0; }
     fi
-    "${DC[@]}" down -v && print_success "Infra derrubada e volumes apagados."
+    "${DC[@]}" "${PROFILES_ALL[@]}" down -v && print_success "Infra derrubada e volumes apagados."
     ;;
 esac

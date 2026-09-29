@@ -133,7 +133,7 @@ _render() { sed -e "s/__DOMAIN__/${DOMAIN}/g" -e "s/__DEVDOMAIN__/${DEVDOMAIN}/g
 # origem|destino
 FILES=(
   "docker-compose.dev.yml|docker-compose.dev.yml"
-  ".env.dev.example|.env.dev.example"
+  ".env.example|.env.example"
   ".gitignore|.gitignore"
   ".rsyncignore|.rsyncignore"
   # O contexto de build passou a ser ESTE repositório — ele precisa do seu.
@@ -185,10 +185,10 @@ for pair in "${FILES[@]}"; do
   $APPLY || continue
   mkdir -p "$DIR/$(dirname "$dst")" && _render "$TPL/$src" > "$DIR/$dst"
 done
-if $ADOPT && [[ -f "$DIR/.env.dev" ]]; then
-  echo "  ${BLUE}=${NC} .env.dev            (já existia — preservado)"
+if $ADOPT && [[ -f "$DIR/.env" ]]; then
+  echo "  ${BLUE}=${NC} .env                (já existia — preservado)"
 else
-  echo "  ${GREEN}+${NC} .env.dev            (cópia local do .example, gitignored)"
+  echo "  ${GREEN}+${NC} .env                (cópia local do .example, gitignored)"
 fi
 if $ADOPT && [[ -d "$DIR/code" ]] && [[ -n "$(ls -A "$DIR/code" 2>/dev/null)" ]]; then
   echo "  ${BLUE}=${NC} code/               (intocado — $(ls -d "$DIR/code"/*/ 2>/dev/null | wc -l | tr -d ' ') app(s) seus)"
@@ -414,7 +414,7 @@ _escrever_onboarding() {
     echo "## 3. O env local"
     echo
     echo '```bash'
-    echo "cp .env.dev.example .env.dev"
+    echo "cp .env.example .env"
     echo '```'
     echo
     echo "Preencha as credenciais do banco. Elas não são as mesmas de quem gerou o"
@@ -440,8 +440,15 @@ _escrever_onboarding() {
 [[ -n "$KIT" ]] && { echo; echo "${BOLD}Apps do kit${NC}"; _instanciar_kit || exit 1; }
 
 if $APPLY; then
-  if [[ ! -f "$DIR/.env.dev" ]]; then
-    cp "$DIR/.env.dev.example" "$DIR/.env.dev"; chmod 600 "$DIR/.env.dev"
+  # O env de dev é o .env: texto puro, local, gitignored. O template versionado
+  # é o .env.example — `.env.dev.example` é o nome legado, ainda aceito para
+  # projeto que foi gerado antes da mudança.
+  if [[ ! -f "$DIR/.env" ]]; then
+    for _ex in "$DIR/.env.example" "$DIR/.env.dev.example"; do
+      [[ -f "$_ex" ]] || continue
+      cp "$_ex" "$DIR/.env"; chmod 600 "$DIR/.env"
+      break
+    done
   fi
   mkdir -p "$DIR/code"
   # Só os verbos do LOOP DE DESENVOLVIMENTO. Os que ficam de fora — deploy,

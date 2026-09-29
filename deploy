@@ -88,6 +88,10 @@ EXEMPLOS:
 
 ARQUIVO servers.yml (no diretório do projeto):
   servers:
+    dev:
+      - name: main
+        label: VM de desenvolvimento
+        env_file: .env
     prd:
       - name: main
         label: VM Principal
@@ -95,6 +99,9 @@ ARQUIVO servers.yml (no diretório do projeto):
       - name: redis
         label: VM Redis
         env_file: .docker-stand-alone/Database/Redis/.env.prd
+
+  O env_file diz ONDE o servidor mora (o diretório) e de qual arquivo sair o
+  REMOTE_HOST. Dev usa .env — texto puro, local; prd/stg usam .env.<ambiente>.
 
   Se não existir, este script passa os argumentos diretamente ao deploy-sync.
 
@@ -212,17 +219,18 @@ _build_flags() {
 
 deploy_server() {
   local name="$1" label="$2" env_file="$3"
-  local dir base env_name
+  local dir env_name
 
   dir="$(dirname "$env_file")"
-  base="$(basename "$env_file")"
 
-  # ".env.prd" → "prd" | ".env.dev" → "dev" | ".env" → "" (deploy-sync usa padrão)
-  if [[ "$base" == ".env" ]]; then
-    env_name=""
-  else
-    env_name="${base#.env.}"
-  fi
+  # O ambiente é o BLOCO do servers.yml, não o sufixo do arquivo.
+  #
+  # ⚠️ Antes ele era derivado do nome: ".env.prd" → "prd", e ".env" → "" (modo
+  #    padrão do deploy-sync). Como o bloco `dev:` aponta para `.env`, todo
+  #    `./deploy dev` caía no modo padrão — que não entrega o .env na VM e
+  #    procura um "docker-compose..yml" que não existe. O bloco já diz qual é o
+  #    ambiente; o deploy-sync sabe qual arquivo ler para cada um.
+  env_name="$ENV_TARGET"
 
   local flags
   flags="$(_build_flags)"

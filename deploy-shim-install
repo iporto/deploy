@@ -76,7 +76,7 @@ PROJECTS=()
 # Reconhece os dois modelos: com produção versionada aqui (.env.prd/compose de
 # produção) e sem — projeto em que produção é imagem publicada no registry.
 if [[ -e "${ROOT}/docker-compose.prd.yml" || -e "${ROOT}/.env.prd" || -e "${ROOT}/.deploy" \
-   || -e "${ROOT}/docker-compose.dev.yml" || -e "${ROOT}/.env.dev" ]]; then
+   || -e "${ROOT}/docker-compose.dev.yml" || -e "${ROOT}/servers.yml" ]]; then
   PROJECTS=("$ROOT")
 else
   while IFS= read -r d; do PROJECTS+=("$d"); done < <(
@@ -95,7 +95,7 @@ if [[ ${#PROJECTS[@]} -eq 0 ]]; then
     echo "${RED}Nada para instalar em: $(cd "$ROOT" 2>/dev/null && pwd || echo "$ROOT")${NC}"
     echo
     echo "Este diretório não parece um projeto de deploy — não encontrei nenhum destes:"
-    echo "  docker-compose.dev.yml · docker-compose.prd.yml · .env.dev · .env.prd · .deploy/"
+    echo "  docker-compose.dev.yml · docker-compose.prd.yml · servers.yml · .env.prd · .deploy/"
     echo "E também não há subdiretório deploy.* aqui para instalar em lote."
     echo
     echo "${BOLD}Se o projeto ainda não existe${NC} — crie a estrutura primeiro:"

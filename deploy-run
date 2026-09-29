@@ -95,7 +95,7 @@ CMD="${POSITIONAL_ARGS[0]:-}"
 # ─── O primeiro argumento como ambiente ──────────────────────────────────────
 #
 #   ./deploy-run             na VM: roda local lendo o .env entregue pelo sync
-#   ./deploy-run dev         lê .env.dev e roda NO CONTEXTO DOCKER ATIVO
+#   ./deploy-run dev         lê .env e roda NO CONTEXTO DOCKER ATIVO
 #   ./deploy-run prd env-app faz SSH e roda o deploy-run de dentro da VM
 #
 # ⚠️ `dev` e `prd` são deliberadamente diferentes.
@@ -110,9 +110,16 @@ CMD="${POSITIONAL_ARGS[0]:-}"
 case "$CMD" in
   dev)
     ENV_TARGET="dev"
-    ENV_FILE_LOCAL=".env.dev"
-    if [[ ! -f "$ENV_FILE_LOCAL" ]]; then
-      print_error "Arquivo .env.dev não encontrado — rode na raiz do projeto"
+    # Dev lê o .env: texto puro, local, nunca versionado — o mesmo arquivo que o
+    # `docker compose` leria sozinho e o mesmo que o deploy-sync entrega na VM.
+    # `.env.dev` fica como legado, para projeto que ainda não migrou.
+    if [[ -f ".env" ]]; then
+      ENV_FILE_LOCAL=".env"
+    elif [[ -f ".env.dev" ]]; then
+      ENV_FILE_LOCAL=".env.dev"
+    else
+      print_error "Nenhum .env encontrado — rode na raiz do projeto"
+      print_error "Crie o seu a partir do template: cp .env.example .env"
       exit 1
     fi
     # Tira o "dev" da frente: o resto do script vê os argumentos como sempre.
@@ -212,9 +219,9 @@ fi
 
 # Carrega o env do ambiente.
 #
-# `./deploy-run dev` lê .env.dev — é o arquivo local de cada desenvolvedor.
-# Sem argumento, lê .env: é como a VM roda a si mesma, com o arquivo que o
-# deploy-sync entregou decriptado.
+# `./deploy-run dev` lê o .env — o arquivo local de cada desenvolvedor.
+# Sem argumento, lê .env também: é como a VM roda a si mesma, com o arquivo que o
+# deploy-sync entregou (decriptado, quando o ambiente é cifrado).
 ENV_SOURCE="${ENV_FILE_LOCAL:-.env}"
 if [[ ! -f "$ENV_SOURCE" ]]; then
   print_error "Arquivo ${ENV_SOURCE} não encontrado!"
@@ -355,7 +362,7 @@ else
   #    `auth: "not present"`, sem nenhuma menção a login.
   if ! printf '%s\n' "$REGISTRY_TOKEN" | docker login "${REGISTRY_HOST}" --username "$REGISTRY_USER" --password-stdin; then
     print_error "Login em ${REGISTRY_HOST} recusado para o usuário '${REGISTRY_USER}'."
-    print_error "  O REGISTRY_TOKEN do .env.${ENV_TARGET:-prd} está inválido ou revogado."
+    print_error "  O REGISTRY_TOKEN do ${ENV_FILE_LOCAL:-.env.${ENV_TARGET:-prd}} está inválido ou revogado."
     print_error "  Ele precisa de 'read:packages'. Corrija com: ./envedit"
     exit 1
   fi

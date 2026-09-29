@@ -215,9 +215,21 @@ PYEOF
 # Configuração
 ################################################################################
 
+# Mesma regra do deploy-sync: prd/stg em .env.<ambiente>, dev no .env (texto
+# puro, local, nunca versionado). `.env.dev` fica como legado.
+_env_file_for() {
+  case "${1:-}" in
+    dev)
+      if [[ -f ".env" ]]; then echo ".env"; else echo ".env.dev"; fi
+      ;;
+    "") echo ".env" ;;
+    *)  echo ".env.${1}" ;;
+  esac
+}
+
 load_local_env() {
   # Aceita path customizado (do servers.yml) ou deriva do ENV_TARGET
-  local env_file="${1:-".env.${ENV_TARGET}"}"
+  local env_file="${1:-"$(_env_file_for "$ENV_TARGET")"}"
 
   case "$ENV_TARGET" in
     dev|prd|stg) ;;
@@ -921,7 +933,7 @@ main() {
 
   # ── Servidor único (sem servers.yml) ──────────────────────────────────────
   SSH_CONTROL_SOCKET="/tmp/deploy-backup-$$.sock"
-  _backup_server ".env.${ENV_TARGET}" "" "$timestamp"
+  _backup_server "$(_env_file_for "$ENV_TARGET")" "" "$timestamp"
 }
 
 main "$@"

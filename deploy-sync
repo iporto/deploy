@@ -128,7 +128,8 @@ show_usage() {
 Uso: $(basename "$0") [AMBIENTE] [OPÇÕES]
 
 AMBIENTE:
-  dev, prd, stg    Ambiente alvo (usa .env.AMBIENTE)
+  prd, stg         Ambiente alvo — lê .env.AMBIENTE (versionado, cifrado)
+  dev              Desenvolvimento — lê .env (local, texto puro)
   (omitir)         Usa .env padrão
 
 OPÇÕES:
@@ -155,7 +156,7 @@ EXEMPLOS:
   $(basename "$0") prd -r        Sync sem executar deploy-run remoto
   $(basename "$0")               Usa .env padrão
 
-VARIÁVEIS NO .env.AMBIENTE (local):
+VARIÁVEIS NO ENV DO AMBIENTE (local):
   REMOTE_HOST       user@ip — destino SSH
   REMOTE_BASE_PATH  Caminho no servidor remoto
   BASTION_HOST      user@bastion — jump host (opcional)
@@ -215,22 +216,44 @@ parse_arguments() {
   done
 }
 
+################################################################################
+# Onde vive o env de cada ambiente
+#
+#   prd, stg → .env.<ambiente>   versionado e, com SOPS no projeto, cifrado
+#   dev      → .env              local, texto puro, nunca versionado
+#
+# Dev não tem arquivo próprio de propósito. `.env` é o nome que o `docker
+# compose` lê sozinho, é o que a VM recebe e é o que o `./deploy-run` carrega —
+# uma fonte só, sem cópia intermediária para envelhecer. Criptografar não
+# acrescentaria nada: o arquivo nunca entra no git.
+#
+# `.env.dev` continua aceito como legado, para projeto que ainda não migrou.
+################################################################################
+_env_file_for() {
+  case "${1:-}" in
+    dev)
+      if [[ -f "${LOCAL_DIR}/.env" ]]; then echo ".env"; else echo ".env.dev"; fi
+      ;;
+    "") echo ".env" ;;
+    *)  echo ".env.${1}" ;;
+  esac
+}
+
 load_env_file() {
   local env_file
 
+  case "$ENV_TARGET" in
+    ""|dev|prd|stg)
+      env_file="$(_env_file_for "$ENV_TARGET")"
+      ;;
+    *)
+      print_error "Ambiente inválido: ${ENV_TARGET} (válidos: dev, prd, stg)"
+      exit 1
+      ;;
+  esac
+
   if [[ -z "$ENV_TARGET" ]]; then
-    env_file=".env"
     print_info "Nenhum ambiente especificado, usando .env padrão"
-  else
-    case "$ENV_TARGET" in
-      dev|prd|stg)
-        env_file=".env.${ENV_TARGET}"
-        ;;
-      *)
-        print_error "Ambiente inválido: ${ENV_TARGET} (válidos: dev, prd, stg)"
-        exit 1
-        ;;
-    esac
   fi
 
   if [[ ! -f "$env_file" ]]; then
@@ -467,7 +490,6 @@ _resolve_age_key() {
   return 1
 }
 
-# Decripta e envia os envs para a VM via stdin do SSH (sem arquivo temporário).
 ################################################################################
 # Entrega do deploy-run
 #
@@ -502,12 +524,24 @@ push_deploy_run() {
   print_success "deploy-run atualizado na VM (755)"
 }
 
-_push_sops_envs() {
-  local ssh_cmd="$1" host="$2" remote_path="$3"
-  local flags=(--input-type dotenv --output-type dotenv)
+# Um env está cifrado quando carrega a linha de metadados do SOPS. É o teste
+# certo — e é o mesmo que o envedit usa.
+#
+# ⚠️ A presença do .sops.yaml diz que o PROJETO usa SOPS, não que ESTE arquivo
+#    esteja cifrado. As creation_rules cobrem prd/stg; o env de dev é texto puro
+#    por decisão, porque nunca é versionado. Decidir pelo .sops.yaml fazia o
+#    `deploy-sync dev` morrer com "sops metadata not found" — mensagem que não
+#    diz o que fazer, num arquivo que nunca deveria passar pelo sops.
+_env_cifrado() { grep -q '^sops_version=' "$1" 2>/dev/null; }
+
+# Valida o ferramental do SOPS uma vez só, e só quando há algo a decriptar.
+# Projeto sem env cifrado não precisa ter sops nem chave age instalados.
+_SOPS_VERIFICADO=false
+_exigir_sops() {
+  [[ "$_SOPS_VERIFICADO" == true ]] && return 0
 
   if ! command -v sops >/dev/null 2>&1; then
-    print_error "Projeto usa SOPS (.sops.yaml presente) mas 'sops' não está instalado."
+    print_error "Há env cifrado neste projeto, mas 'sops' não está instalado."
     print_error "Instale com: brew install sops age"
     return 1
   fi
@@ -519,40 +553,26 @@ _push_sops_envs() {
     return 1
   fi
 
-  local src="${LOCAL_DIR}/.env.${ENV_TARGET}"
-  if [[ ! -f "$src" ]]; then
-    print_error "Arquivo ${src} não encontrado"
-    return 1
-  fi
-
-  print_info "Decriptando e enviando .env.${ENV_TARGET} → .env..."
-  if ! sops -d "${flags[@]}" "$src" \
-       | $ssh_cmd "$host" "umask 077 && cat > '${remote_path}/.env' && chmod 600 '${remote_path}/.env'"; then
-    print_error "Falha ao enviar o .env decriptado"
-    return 1
-  fi
-  print_success "Arquivo .env atualizado (600)"
-
-  # Envs por aplicação: .envs/<app>.env.<ambiente> → .envs/<app>.env na VM.
-  local sent=0 f app
-  shopt -s nullglob
-  for f in "${LOCAL_DIR}"/.envs/*.env."${ENV_TARGET}"; do
-    app="$(basename "$f")"; app="${app%%.env.*}"
-    if ! $ssh_cmd "$host" "mkdir -p '${remote_path}/.envs'"; then
-      print_error "Não foi possível criar ${remote_path}/.envs"
-      shopt -u nullglob; return 1
-    fi
-    if ! sops -d "${flags[@]}" "$f" \
-         | $ssh_cmd "$host" "umask 077 && cat > '${remote_path}/.envs/${app}.env' && chmod 600 '${remote_path}/.envs/${app}.env'"; then
-      print_error "Falha ao enviar .envs/${app}.env"
-      shopt -u nullglob; return 1
-    fi
-    sent=$((sent+1))
-  done
-  shopt -u nullglob
-
-  [[ "$sent" -gt 0 ]] && print_success "${sent} env(s) de aplicação enviados (600)"
+  _SOPS_VERIFICADO=true
   return 0
+}
+
+# Entrega UM env na VM, pelo túnel do SSH já aberto.
+#
+# Cifrado, decripta em memória. Texto puro, envia como está. Nos dois casos o
+# conteúdo não toca o disco local decriptado e não depende do rsync — que exclui
+# .env e .envs/*.env justamente para não sobrescrever nem apagar o que chega
+# por aqui.
+_push_env() {
+  local ssh_cmd="$1" host="$2" src="$3" dest="$4"
+  local remoto="umask 077 && cat > '${dest}' && chmod 600 '${dest}'"
+
+  if _env_cifrado "$src"; then
+    _exigir_sops || return 1
+    sops -d --input-type dotenv --output-type dotenv "$src" | $ssh_cmd "$host" "$remoto"
+  else
+    $ssh_cmd "$host" "$remoto" < "$src"
+  fi
 }
 
 copy_env_file() {
@@ -570,33 +590,51 @@ copy_env_file() {
     return 0
   fi
 
+  local env_rel src
+  env_rel="$(_env_file_for "$ENV_TARGET")"
+  src="${LOCAL_DIR}/${env_rel}"
+
+  if [[ ! -f "$src" ]]; then
+    print_error "Arquivo ${src} não encontrado"
+    return 1
+  fi
+
+  if _env_cifrado "$src"; then
+    print_info "Decriptando e enviando ${env_rel} → .env..."
+  else
+    print_info "Enviando ${env_rel} → .env (texto puro)..."
+  fi
+
+  if ! _push_env "$ssh_cmd" "$host" "$src" "${remote_path}/.env"; then
+    print_error "Falha ao enviar o .env"
+    return 1
+  fi
+  print_success "Arquivo .env atualizado (600)"
+
+  # Envs por aplicação: .envs/<app>.env.<ambiente> → .envs/<app>.env na VM.
+  # Sem ambiente não há glob a resolver — o .env genérico já foi entregue acima.
   if [[ -z "$ENV_TARGET" ]]; then
-    print_info "Ambiente padrão — .env remoto já está correto"
     return 0
   fi
 
-  local env_source=".env.${ENV_TARGET}"
+  local sent=0 f app
+  shopt -s nullglob
+  for f in "${LOCAL_DIR}"/.envs/*.env."${ENV_TARGET}"; do
+    app="$(basename "$f")"; app="${app%%.env.*}"
+    if ! $ssh_cmd "$host" "mkdir -p '${remote_path}/.envs'"; then
+      print_error "Não foi possível criar ${remote_path}/.envs"
+      shopt -u nullglob; return 1
+    fi
+    if ! _push_env "$ssh_cmd" "$host" "$f" "${remote_path}/.envs/${app}.env"; then
+      print_error "Falha ao enviar .envs/${app}.env"
+      shopt -u nullglob; return 1
+    fi
+    sent=$((sent+1))
+  done
+  shopt -u nullglob
 
-  # ── Modo SOPS ───────────────────────────────────────────────────────────────
-  # Se o projeto tem .sops.yaml, os envs versionados estão CRIPTOGRAFADOS. Copiar
-  # o arquivo como está entregaria texto cifrado ao container. Aqui decriptamos
-  # localmente e enviamos o resultado pelo túnel do próprio SSH — o texto puro
-  # nunca toca o disco local nem o repositório.
-  #
-  # Projetos sem .sops.yaml seguem exatamente o comportamento anterior.
-  if [[ -f "${LOCAL_DIR}/.sops.yaml" ]]; then
-    _push_sops_envs "$ssh_cmd" "$host" "$remote_path"
-    return $?
-  fi
-
-  print_info "Copiando ${env_source} → .env no servidor remoto..."
-
-  if $ssh_cmd "$host" "cd '${remote_path}' && [[ -f ${env_source} ]] && cp ${env_source} .env"; then
-    print_success "Arquivo .env atualizado"
-  else
-    print_error "Falha ao copiar .env (${env_source} não encontrado no servidor?)"
-    return 1
-  fi
+  [[ "$sent" -gt 0 ]] && print_success "${sent} env(s) de aplicação enviados (600)"
+  return 0
 }
 
 # Resolve o grupo "app": todo serviço do compose que monta um env de .envs/.
@@ -638,8 +676,9 @@ _reiniciar_servicos() {
   local ssh_cmd="$1" host="$2" servicos="$3"
   local projeto svc ids total=0
 
-  projeto=$(_env_read APP_PROJECT_NAME "${LOCAL_DIR}/.env.${ENV_TARGET}")
-  case "$(_env_read APP_ENV "${LOCAL_DIR}/.env.${ENV_TARGET}")" in
+  local envf="${LOCAL_DIR}/$(_env_file_for "$ENV_TARGET")"
+  projeto=$(_env_read APP_PROJECT_NAME "$envf")
+  case "$(_env_read APP_ENV "$envf")" in
     production)  projeto="${projeto}-prod" ;;
     staging)     projeto="${projeto}-stg" ;;
     development) projeto="${projeto}-dev" ;;

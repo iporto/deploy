@@ -11,7 +11,7 @@ set -euo pipefail
 #
 # Uso:
 #   ./envedit                 edita .env.prd
-#   ./envedit dev             edita .env.dev
+#   ./envedit dev             aponta o .env de dev (texto puro — não é cifrado)
 #   ./envedit api             edita .envs/api.env.prd
 #   ./envedit api dev         edita .envs/api.env.dev
 #   ./envedit --show api      imprime decriptado no stdout (não salve em arquivo!)
@@ -120,10 +120,14 @@ _avisar_hostis_ao_shell() {
   # container, onde o dotenv do Laravel interpola ${VAR} de propósito — avisar
   # ali seria falso positivo em toda VITE_URL.
   case "$f" in
-    .env.prd|.env.dev|.env.stg) ;;
+    .env|.env.prd|.env.dev|.env.stg) ;;
     *) return 0 ;;
   esac
-  conteudo=$(sops -d "${SOPS_FLAGS[@]}" "$f" 2>/dev/null) || return 0
+  if grep -q '^sops_version=' "$f" 2>/dev/null; then
+    conteudo=$(sops -d "${SOPS_FLAGS[@]}" "$f" 2>/dev/null) || return 0
+  else
+    conteudo=$(cat "$f") || return 0
+  fi
   local achados
   achados=$(printf '%s\n' "$conteudo" | python3 -c '
 import sys, re
@@ -163,11 +167,18 @@ for linha in sys.stdin:
 if [[ "$CHECK" == true ]]; then
   # Nomes que indicam segredo. VITE_* fica de fora: vai para o bundle público.
   readonly SENSIVEL='^(APP_KEY|[A-Z0-9_]*(PASSWORD|SECRET|TOKEN|SALT|DSN)[A-Z0-9_]*|[A-Z0-9_]*_KEY|[A-Z0-9_]*_KEY_ID)='
+  # O que o git ignora não chega ao commit — e é justamente o caso do env de
+  # dev, que é texto puro por decisão. Sem esta linha o --check acusava segredo
+  # em arquivo que nunca sai da máquina, e o falso positivo treina a ignorar o
+  # aviso de verdade.
+  _ignorado_pelo_git() { git check-ignore -q "$1" 2>/dev/null; }
+
   achou=0
   shopt -s nullglob
-  for f in .env.prd .env.dev .env.stg .envs/*.env.* .docker-stand-alone/*/*/.env.*; do
+  for f in .env .env.prd .env.dev .env.stg .envs/*.env.* .docker-stand-alone/*/*/.env.*; do
     [[ -f "$f" ]] || continue
     [[ -s "$f" ]] || continue
+    _ignorado_pelo_git "$f" && continue
     while IFS= read -r linha; do
       chave="${linha%%=*}"
       valor="${linha#*=}"
@@ -186,7 +197,7 @@ if [[ "$CHECK" == true ]]; then
     print_error "Há segredo em texto puro. Corrija com ./envedit antes de commitar."
     exit 1
   fi
-  for f in .env.prd .env.dev .env.stg; do
+  for f in .env .env.prd .env.dev .env.stg; do
     [[ -f "$f" ]] && _avisar_hostis_ao_shell "$f"
   done
 
@@ -201,7 +212,9 @@ if [[ "$INIT" == true ]]; then
   print_warning "O histórico do git continua com os valores antigos — rotacione depois."
   echo
   found=0
-  for f in .env.prd .env.dev .env.stg .envs/*.env.prd .envs/*.env.dev; do
+  # Dev fica de fora: o env de desenvolvimento é o .env, texto puro, e nunca
+  # entra no git — cifrar só acrescentaria atrito ao trabalho de quem desenvolve.
+  for f in .env.prd .env.stg .envs/*.env.prd; do
     [[ -f "$f" ]] || continue
     if grep -q '^sops_version=' "$f" 2>/dev/null; then
       print_info "já criptografado, pulando: $f"
@@ -233,6 +246,10 @@ if [[ "$app" == *.env.* || "$app" == */* ]]; then
   [[ "$file" != .envs/* && "$file" != .env.* ]] && file=".envs/${file}"
 elif [[ -n "$app" ]]; then
   file=".envs/${app}.env.${env_name}"
+elif [[ "$env_name" == "dev" ]]; then
+  # Dev mora no .env, em texto puro. Não existe .env.dev para cifrar — o bloco
+  # logo abaixo detecta que o arquivo não está cifrado e diz o que fazer.
+  if [[ -f ".env" ]]; then file=".env"; else file=".env.dev"; fi
 else
   file=".env.${env_name}"
 fi
@@ -272,7 +289,7 @@ if ! grep -q 'ENC\[\|sops_version' "$file" 2>/dev/null; then
   fi
   print_warning "${file} não está criptografado — o envedit não tem o que fazer aqui."
   print_info "Envs de desenvolvimento são texto puro por decisão de projeto:"
-  print_info "  o template versionado é o .env.dev.example; o .env.dev é local e gitignored."
+  print_info "  o template versionado é o .env.example; o .env é local e gitignored."
   print_info "Edite direto:  \${EDITOR:-code} ${file}"
   exit 0
 fi

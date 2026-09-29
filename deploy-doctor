@@ -79,6 +79,106 @@ else
   esac
 fi
 
+# ─── Credenciais de registry ─────────────────────────────────────────────────
+#
+# ⚠️ Credencial REVOGADA é pior que credencial nenhuma. O Docker envia a que tem
+#    e NÃO cai para anônimo quando ela é recusada — por design, já que um 401
+#    também significaria "credencial certa, sem permissão nesse repo", e o
+#    fallback mascararia isso. O efeito prático é imagem PÚBLICA parando de
+#    baixar, com um erro que não cita o config.json em momento nenhum. Pior: o
+#    auth.docker.io estrangula o IP depois de algumas recusas em série, e o que
+#    sobra na tela é "429 Too Many Requests" — que parece limite de pull, manda
+#    procurar cota, e não é. A cota pode estar intacta.
+#
+# ⚠️ Com daemon REMOTO a credencial que vale é a DESTA máquina. O cliente lê o
+#    config.json local e a envia ao daemon junto do pedido (X-Registry-Auth); o
+#    daemon remoto não tem config.json próprio. Logar ou deslogar na VM não muda
+#    nada — é aqui que se resolve. Enquanto isso não fica claro, o diagnóstico
+#    vai para o lado errado da conexão.
+
+USUARIO_REGISTRY=""
+
+# Exercita a credencial pelo mesmo caminho que o pull usa, sem ler nem manipular
+# o segredo: quem resolve o login é o próprio cliente Docker. Quando ela é
+# recusada, isto falha ANTES de buscar o manifesto — não consome cota de pull.
+_registry_prova() {
+  local host="$1" img="$2" saida rc dica quem
+  saida="$(docker manifest inspect "$img" 2>&1 >/dev/null)"; rc=$?
+
+  if [[ $rc -eq 0 ]]; then
+    [[ -n "$USUARIO_REGISTRY" ]] && quem=" (credencial de '${USUARIO_REGISTRY}')" || quem=""
+    ok "${host}: autoriza o pull${quem}"
+    return 0
+  fi
+
+  dica="corrija com: docker logout ${host}"
+  [[ "$DAEMON_REMOTO" == true ]] && dica="${dica} — AQUI, não na VM: o daemon remoto usa a credencial desta máquina"
+
+  case "$saida" in
+    *"incorrect username or password"*|*"unauthorized: authentication required"*)
+      fail "${host}: a credencial guardada nesta máquina foi recusada" \
+           "com ela, até imagem pública para de baixar, e o erro do pull não menciona credencial. ${dica}" ;;
+    *denied*)
+      warn "${host}: a credencial não dá acesso a ${img}" \
+           "o login é aceito; o que falta é permissão no repositório" ;;
+    *429*|*"too many requests"*|*[Tt]oo[Mm]any[Rr]equests*)
+      warn "${host}: limite de requisições atingido agora" \
+           "costuma ser consequência de credencial recusada em série — tente de novo em alguns minutos" ;;
+    *experimental*)
+      warn "${host}: 'docker manifest' indisponível neste cliente" \
+           "credencial não verificada — atualize o Docker para checar" ;;
+    *)
+      warn "${host}: não deu para verificar" "${saida%%$'\n'*}" ;;
+  esac
+  return 1
+}
+
+# Só enriquece a mensagem; se não der para ler, o check continua valendo.
+# ⚠️ grep -o em vez de sed: um `.*"auth"` guloso pegaria a credencial do ÚLTIMO
+#    registry do arquivo, não a do Docker Hub.
+_usuario_registry() {
+  local cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json" b64
+  [[ -f "$cfg" ]] || return 0
+  command -v openssl >/dev/null 2>&1 || return 0
+  b64="$(tr -d ' \t\n' < "$cfg" \
+         | grep -o '"https://index\.docker\.io/v1/":{"auth":"[^"]*"' \
+         | sed 's/.*"auth":"//; s/"$//' | head -1)"
+  [[ -n "$b64" ]] || return 0
+  printf '%s' "$b64" | openssl base64 -d -A 2>/dev/null | cut -d: -f1
+}
+
+# Valida um par usuário/token sem gastar cota: o endpoint de token responde 200
+# para credencial boa e 401/403 para recusada, antes de tocar em manifesto.
+# 0 = válida | 1 = recusada | 2 = não deu para verificar
+_registry_token_valido() {
+  local host="$1" user="$2" secret="$3" url code
+  case "$host" in
+    docker.io|index.docker.io|registry-1.docker.io|https://index.docker.io/v1/)
+      url='https://auth.docker.io/token?service=registry.docker.io' ;;
+    ghcr.io)
+      url='https://ghcr.io/token?service=ghcr.io&scope=repository:probe/probe:pull' ;;
+    *) return 2 ;;
+  esac
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --basic \
+            --user "${user}:${secret}" "$url" 2>/dev/null)"
+  case "$code" in
+    200)     return 0 ;;
+    401|403) return 1 ;;
+    429)     return 3 ;;
+    *)       return 2 ;;
+  esac
+}
+
+titulo "Registry"
+if ! command -v docker >/dev/null 2>&1; then
+  warn "docker ausente — credenciais não verificadas"
+else
+  USUARIO_REGISTRY="$(_usuario_registry)"
+  # alpine:3 é a mesma imagem que a checagem de arquitetura já usa: pública,
+  # minúscula e sempre presente no Hub.
+  _registry_prova "docker.io" "alpine:3"
+fi
+
 titulo "Recursos"
 # ⚠️ Disco e portas são medidos NESTA máquina. Com daemon remoto, quem precisa
 #    do espaço e das portas é o outro lado — e o doctor não o alcança.
@@ -155,6 +255,21 @@ if [[ -f "$INFRA_ENV" ]]; then
     v="$(grep -E "^${k}=" "$INFRA_ENV" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
     [[ -z "$v" ]] && faltando="${faltando} ${k}"
   done
+  # Extras (INFRA_EXTRAS): cada um liga um container e cobra a própria senha.
+  _extras="$(grep -E '^INFRA_EXTRAS=' "$INFRA_ENV" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr ',' ' ' || true)"
+  for x in $_extras; do
+    case "$x" in
+      s3)     k=MINIO_ROOT_PASSWORD; c=infra-s3 ;;
+      search) k=MEILI_MASTER_KEY;    c=infra-meilisearch ;;
+      *)      fail "INFRA_EXTRAS: extra desconhecido '${x}'" "disponíveis: s3 search"; continue ;;
+    esac
+    v="$(grep -E "^${k}=" "$INFRA_ENV" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
+    [[ -z "$v" ]] && faltando="${faltando} ${k}"
+    st="$(docker inspect --format '{{.State.Status}}' "$c" 2>/dev/null)"
+    if [[ "$st" == "running" ]]; then ok "${c}: extra '${x}' no ar"
+    else warn "${c}: extra '${x}' ligado, mas ${st:-não existe}" "rode: deploy-infra up"; fi
+  done
+
   [[ -z "$faltando" ]] && ok "infra/.env.dev preenchido" \
     || fail "infra/.env.dev com senha em branco:${faltando}" "gere com: openssl rand -hex 24"
 
@@ -179,8 +294,48 @@ fi
 # ─── Verificações do projeto ─────────────────────────────────────────────────
 if [[ -n "$PROJ" ]]; then
   titulo "Projeto: $(basename "$PROJ")"
-  [[ -f "$PROJ/.env.dev" ]] && ok ".env.dev presente" || fail ".env.dev ausente" "rode o deploy-scaffold-project"
+  # Dev usa .env (texto puro, local). `.env.dev` é o nome legado, ainda aceito.
+  if [[ -f "$PROJ/.env" ]]; then
+    ok ".env presente"
+  elif [[ -f "$PROJ/.env.dev" ]]; then
+    warn ".env.dev presente, .env ausente (nome legado)" "renomeie: mv .env.dev .env"
+  else
+    fail ".env ausente" "copie o template: cp .env.example .env"
+  fi
   [[ -f "$PROJ/docker-compose.dev.yml" ]] && ok "docker-compose.dev.yml presente" || fail "compose de dev ausente"
+
+  # ⚠️ Token de registry revogado no .env não dá sinal em dev — só no deploy: em
+  #    prd o deploy-run tenta o login e MORRE; onde há Watchtower, ele sobe e
+  #    falha calado, com `auth: "not present"` no log e nenhuma menção a login.
+  #    Verificar custa uma requisição ao endpoint de token, que não gasta cota.
+  _env_val() { grep -E "^${2}=" "$1" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"; }
+  for envf in .env .env.dev .env.stg .env.prd; do
+    [[ -f "$PROJ/$envf" ]] || continue
+    _f="$PROJ/$envf"
+    rhost="$(_env_val "$_f" REGISTRY_HOST)"; rhost="${rhost:-docker.io}"
+    ruser="$(_env_val "$_f" REGISTRY_USER)"; [[ -z "$ruser" ]] && ruser="$(_env_val "$_f" DOCKER_USER)"
+    rtok="$(_env_val "$_f" REGISTRY_TOKEN)"; [[ -z "$rtok" ]] && rtok="$(_env_val "$_f" DOCKER_TOKEN)"
+
+    if [[ -z "$ruser" && -z "$rtok" ]]; then
+      ok "${envf}: sem credencial de registry (pull anônimo)"
+    elif [[ "$rtok" == ENC\[* ]]; then
+      ok "${envf}: credencial cifrada — não verificada aqui"
+    elif [[ -z "$ruser" || -z "$rtok" ]]; then
+      warn "${envf}: credencial de registry pela metade" \
+           "defina os dois — REGISTRY_USER e REGISTRY_TOKEN (ou DOCKER_USER/DOCKER_TOKEN). Edite com: ./envedit"
+    else
+      _registry_token_valido "$rhost" "$ruser" "$rtok"
+      case $? in
+        0) ok "${envf}: token de ${rhost} válido ('${ruser}')" ;;
+        1) warn "${envf}: token de ${rhost} recusado ('${ruser}')" \
+                "o deploy de ${envf#.env.} vai falhar no login. Gere outro e atualize com: ./envedit" ;;
+        2) warn "${envf}: token de ${rhost} não verificado" \
+                "registry sem checagem conhecida, ou o endpoint não respondeu" ;;
+        3) warn "${envf}: token de ${rhost} não verificado — 429 no endpoint de token" \
+                "o auth do registry está limitando este IP; costuma vir na esteira de credencial recusada em série. Tente de novo em alguns minutos" ;;
+      esac
+    fi
+  done
 
   if [[ -f "$PROJ/hosts" ]]; then
     pend=""
