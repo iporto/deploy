@@ -123,7 +123,8 @@ if [[ -f deploy-destinations.json && -f .github/workflows/promote.yml && -f .git
       h=$(version_at "$app" hml 2>&1 | _limpa || true); p=$(version_at "$app" prd 2>&1 | _limpa || true)
       [[ "$h$p" == *"[ERRO]"* ]] && { echo "$h $p" | grep -m1 ERRO >&2; return 1; }
       b=$(gh run list -R "$(repo_of "$app")" --workflow=build.yml --limit 1 --json status --jq '.[0].status' 2>/dev/null || echo '?')
-      if   [[ -z "$(destinations_of "$app" prd)" ]]; then sit="⛔ sem destino prd no mapa"
+      if   is_legacy "$app";                        then sit="↪  sem HML — cada build vai direto a prd"
+      elif [[ -z "$(destinations_of "$app" prd)" ]]; then sit="⛔ sem destino prd no mapa"
       elif [[ -z "$h" ]];                             then sit="⚠️  nada em :hml"
       elif [[ "$h" == "$p" ]];                        then sit="✅ em dia"
       elif [[ "$b" != "completed" ]];                 then sit="⏳ buildando"
@@ -136,6 +137,11 @@ if [[ -f deploy-destinations.json && -f .github/workflows/promote.yml && -f .git
 
   hml_promover() {
     local app="$1" v="${2:-}" p id rid
+    if is_legacy "$app"; then
+      print_error "[${app%%.*}] sem HML no mapa — cada build já vai direto a produção; não há o que promover"
+      print_error "        Rollback: gh workflow run deploy.yml -R ${DEPLOY_REPO} -f app=${app} -f ambiente=prd -f versao=vX.Y.Z"
+      return 1
+    fi
     if [[ -z "$(destinations_of "$app" prd)" ]]; then
       # No --check, mostra o plano mesmo assim: saber O QUE iria é útil antes
       # de os Resources de produção existirem.
