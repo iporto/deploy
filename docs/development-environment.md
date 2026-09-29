@@ -111,7 +111,7 @@ Deploy-Scripts/
 | Mudança | Motivo |
 |---|---|
 | `dev-infra/` → **`infra/`** | nome mais curto; o "dev" já está implícito no comando |
-| `.env.example` → **`.env.dev.example`** | mesma convenção dos projetos |
+| `.env.example` → **`.env.dev.example`** | era a convenção dos projetos à época |
 | `.env` → **`.env.dev`** | idem |
 | **novo:** `deploy-infra createdb <nome>` | o dev não precisa saber criar banco e usuário no servidor |
 
@@ -120,6 +120,12 @@ deploy-infra up                    # sobe a base
 deploy-infra createdb acme         # cria database + usuário + senha, e imprime as credenciais
 deploy-infra status | down | logs | reset
 ```
+
+> ⚠️ **A infra manteve o nome `.env.dev`; os PROJETOS passaram a usar `.env`** (2026-09-14).
+> A divergência é deliberada: o `infra/.env.dev` guarda a senha com que o volume do MySQL
+> foi criado, e o MySQL nunca mais a relê do arquivo. Renomear na máquina de quem já tem a
+> infra de pé trocaria a senha por uma gerada na hora e derrubaria o acesso ao banco local —
+> custo real, ganho nenhum. O `deploy-infra` passa `--env-file .env.dev` explicitamente.
 
 > ✅ **O dev só ajusta o `.env.dev` da infra para subir o servidor base.** Tudo o que
 > acontece *dentro* do MySQL — criar database, criar usuário, dar grant — é linha de
@@ -174,7 +180,7 @@ deploy.acme.com/
     www.acme.com/          ← cópia de kit/code/www
   docker-compose.dev.yml
   .docker/{Nginx,Php}/
-  .env.dev.example  .env.dev
+  .env.example  .env
   hosts  docs/coolify-deploy.md
   deploy-run  deploy-sync            ← só estes dois verbos (ver abaixo)
 ```
@@ -249,7 +255,7 @@ O desenho pedido é outro: **o contexto executa, o SSH entrega arquivos.**
 
 | Comando | Passa a ser |
 |---|---|
-| `./deploy-run dev` | lê **`.env.dev`**, roda `docker compose` no **contexto ativo** — sem SSH |
+| `./deploy-run dev` | lê **`.env`**, roda `docker compose` no **contexto ativo** — sem SSH |
 | `./deploy-sync dev` | leva os arquivos para a VM, quando o contexto é remoto |
 | `./deploy-run prd` \| `stg` | **inalterado** — segue com SSH |
 | `./deploy-run` (sem argumento) | **inalterado** — é como a VM roda a si mesma, lendo o `.env` entregue |
@@ -259,9 +265,10 @@ O desenho pedido é outro: **o contexto executa, o SSH entrega arquivos.**
 > **produção na VM de desenvolvimento**. Produção tem um host definido no `.env.prd`, não
 > "o contexto que por acaso está ativo". O SSH ali é proteção, não legado.
 
-> ✅ **Isto também conserta um bug do plano:** o projeto gerado tem `.env.dev` mas não
-> `.env`, e o `deploy-run` sem argumento aborta se o `.env` faltar. Com `./deploy-run dev`
-> lendo `.env.dev`, o projeto novo funciona sem precisar de um `.env` duplicado.
+> ✅ **Isto também conserta um bug do plano:** o projeto gerado tinha `.env.dev` mas não
+> `.env`, e o `deploy-run` sem argumento aborta se o `.env` faltar. Desde 2026-09-14 o env de
+> desenvolvimento **é** o `.env` (texto puro, gitignored, gerado do `.env.example`): com ou
+> sem o argumento `dev`, os dois leem o mesmo arquivo e não há cópia duplicada para divergir.
 
 > 📌 **Consequência para quem usa daemon remoto (não afeta o kit).** Se o contexto remoto exige
 > `deploy-sync` para os arquivos chegarem, o loop de desenvolvimento remoto precisa de
@@ -434,7 +441,7 @@ verifica o ambiente e diz o que falta, em vez de deixar o dev adivinhar:
 | Rede `shared` existe | containers sobem e nada roteia |
 | `infra-traefik`, `infra-mysql`, `infra-redis`, `infra-mail` no ar | erro de conexão sem causa aparente |
 | Portas livres (80, 3306, 6379, 1025, 8025) | `up` falha com "port already allocated" |
-| `.env.dev` presente e sem chave sensível vazia | container sobe e morre no boot |
+| `.env` presente e sem chave sensível vazia | container sobe e morre no boot |
 | Linhas do `./hosts` no `/etc/hosts` | **cai numa página aleatória da internet** (§4.5) |
 | Database do projeto existe no MySQL | `migrate` falha |
 | Apps em `code/` com `.env` apontando para `infra-*` | app sobe apontando para si mesmo |
@@ -489,7 +496,7 @@ por máquina de propósito — porta 80, `infra-mysql`, `infra-redis` são nomes
 
 **Dados para o dev novo.** Não há seed nem dump para distribuir: **o produto do kit tem os
 próprios migrations**, e o dev **cria as próprias credenciais**. `migrate` monta o schema; o
-`.env.dev.example` já nasce com os valores sensíveis vazios, para o dev preencher com senhas
+`.env.example` já nasce com os valores sensíveis vazios, para o dev preencher com senhas
 locais dele. Isso encaixa no modelo de env que já foi adotado — nada novo a construir.
 
 **Chaves do Spelt.** São **do dev, não do kit**. Quem adota configura as próprias

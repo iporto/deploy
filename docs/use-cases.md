@@ -66,6 +66,23 @@ sudo sh -c 'cat hosts >> /etc/hosts'            # na máquina do NAVEGADOR
 ./deploy-run dev
 ```
 
+> [!TIP]
+> **O app usa S3 ou busca?** A infra tem dois extras, desligados por padrão:
+> `s3` (MinIO, container `infra-s3`) e `search` (Meilisearch,
+> `infra-meilisearch`). Ligue-os no `infra/.env.dev` e suba de novo:
+>
+> ```bash
+> # infra/.env.dev
+> INFRA_EXTRAS="s3 search"
+> MINIO_ROOT_PASSWORD="<openssl rand -hex 24>"
+> MEILI_MASTER_KEY="<openssl rand -hex 24>"
+> ```
+>
+> ```bash
+> deploy-infra up
+> deploy-infra createbucket acme --public         # imprime as linhas AWS_* do .env
+> ```
+
 > [!NOTE]
 > O `deploy-scaffold-app` instala só o `notify-deploy.yml`: quem constrói a
 > imagem é este repositório de deploy, com os Dockerfiles de `.docker/Code/`.
@@ -178,7 +195,7 @@ mkdir -p code
 git clone <url> code/api.acme.com               # só os que você tem acesso
 git clone <url> code/platform.acme.com
 
-cp .env.dev.example .env.dev                    # e preencha o banco
+cp .env.example .env                            # e preencha o banco
 deploy-infra up                                 # a sua infra local
 deploy-infra createdb acme                      # o seu banco local
 
@@ -211,6 +228,8 @@ O trabalho se divide em dois canais:
 ```bash
 ./deploy-mutagen status                         # o que está sincronizando
 ./deploy-mutagen start                          # inicia as sessões paradas
+./deploy-mutagen pause api                      # suspende a sincronia de um app só
+./deploy-mutagen resume api                     # e devolve
 ./deploy-run dev                                # sincroniza a config e sobe
 ```
 
