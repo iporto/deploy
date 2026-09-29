@@ -115,8 +115,8 @@ if [[ -f deploy-destinations.json && -f .github/workflows/promote.yml && -f .git
   }
 
   hml_status() {
-    printf "  %-12s %-10s %-10s %-10s %s\n" APP ":hml" ":prd" "build" "situação"
-    printf "  %-12s %-10s %-10s %-10s %s\n" "────────────" "──────────" "──────────" "──────────" "────────"
+    printf "  %-20s %-10s %-10s %-10s %s\n" APP ":hml" ":prd" "build" "situação"
+    printf "  %-20s %-10s %-10s %-10s %s\n" "────────────────────" "──────────" "──────────" "──────────" "────────"
     local app h p b sit
     for app in $(apps_known); do
       # `|| true`: com set -e, uma falha aqui mataria o script e a mensagem sumiria.
@@ -131,7 +131,7 @@ if [[ -f deploy-destinations.json && -f .github/workflows/promote.yml && -f .git
       else                                                 sit="🔸 pronto para promover"
       fi
       # "-" e não "—": o printf alinha por byte, e o travessão tem três.
-      printf "  %-12s %-10s %-10s %-10s %s\n" "${app%%.*}" "${h:--}" "${p:--}" "$b" "$sit"
+      printf "  %-20s %-10s %-10s %-10s %s\n" "${app%%.*}" "${h:--}" "${p:--}" "$b" "$sit"
     done
   }
 
