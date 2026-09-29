@@ -5,8 +5,8 @@ services:
     profiles:
       - "development"
     environment:
-      - PUID=${APP_UID}
-      - PGID=${APP_GID}
+      - PUID=${APP_UID:-1000}
+      - PGID=${APP_GID:-1000}
       - ALLOW_OVERRIDE=true
       - TZ=UTC
     working_dir: /var/www/html
@@ -54,8 +54,8 @@ services:
     profiles:
       - "development"
     environment:
-      - PUID=${APP_UID}
-      - PGID=${APP_GID}
+      - PUID=${APP_UID:-1000}
+      - PGID=${APP_GID:-1000}
       - TZ=UTC
       - ALLOW_OVERRIDE=true
     working_dir: /var/www/html
@@ -77,8 +77,8 @@ services:
     profiles:
       - "development"
     environment:
-      - PUID=${APP_UID}
-      - PGID=${APP_GID}
+      - PUID=${APP_UID:-1000}
+      - PGID=${APP_GID:-1000}
       - TZ=Etc/GMT-3
       - ALLOW_OVERRIDE=true
     working_dir: /var/www/html
@@ -87,7 +87,7 @@ services:
     networks:
       - shared
     restart: unless-stopped
-    command: sh -c "chown 1000:1000 api.__DOMAIN__ -R && cd api.__DOMAIN__ && ./init-laravel.sh && tail -f /dev/null"
+    command: sh -c "chown ${APP_UID:-1000}:${APP_GID:-1000} api.__DOMAIN__ -R && cd api.__DOMAIN__ && ./init-laravel.sh && tail -f /dev/null"
 
   php-console:
     image: iporto99/php-8-3:1.5
@@ -96,8 +96,8 @@ services:
       - "development"
       - "command"
     environment:
-      - PUID=${APP_UID}
-      - PGID=${APP_GID}
+      - PUID=${APP_UID:-1000}
+      - PGID=${APP_GID:-1000}
       - TZ=Etc/GMT-3
     volumes:
       # - ${REMOTE_BASE_PATH}/code/:/var/www/html:rw
@@ -132,8 +132,8 @@ services:
     profiles:
       - "www"
     environment:
-      - PUID=${APP_UID}
-      - PGID=${APP_GID}
+      - PUID=${APP_UID:-1000}
+      - PGID=${APP_GID:-1000}
       - TZ=UTC
       - ALLOW_OVERRIDE=true
     working_dir: /var/www/html
@@ -149,7 +149,7 @@ services:
       # Middleware para WebSocket (necessário para HMR do Vite)
       - "traefik.http.middlewares.${APP_PROJECT_NAME}-vite-www-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
     restart: unless-stopped
-    command: sh -c "chown 1000:1000 www.__DOMAIN__ -R && cd www.__DOMAIN__ && ./init-laravel.sh && npm run dev -- --host 0.0.0.0"
+    command: sh -c "chown ${APP_UID:-1000}:${APP_GID:-1000} www.__DOMAIN__ -R && cd www.__DOMAIN__ && ./init-laravel.sh && npm run dev -- --host 0.0.0.0"
 
   env-platform:
     image: iporto99/php-8-3:1.5
@@ -157,8 +157,8 @@ services:
     profiles:
       - "development"
     environment:
-      - PUID=${APP_UID}
-      - PGID=${APP_GID}
+      - PUID=${APP_UID:-1000}
+      - PGID=${APP_GID:-1000}
       - TZ=UTC
       - ALLOW_OVERRIDE=true
     working_dir: /var/www/html
@@ -174,7 +174,7 @@ services:
       # Middleware para WebSocket (necessário para HMR do Vite)
       - "traefik.http.middlewares.${APP_PROJECT_NAME}-vite-platform-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
     restart: unless-stopped
-    command: sh -c "chown 1000:1000 platform.__DOMAIN__ -R && cd platform.__DOMAIN__ && ./init-laravel.sh && npm run dev -- --host 0.0.0.0"
+    command: sh -c "chown ${APP_UID:-1000}:${APP_GID:-1000} platform.__DOMAIN__ -R && cd platform.__DOMAIN__ && ./init-laravel.sh && npm run dev -- --host 0.0.0.0"
 
 networks:
   shared:

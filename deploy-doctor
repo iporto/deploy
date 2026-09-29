@@ -297,6 +297,15 @@ if [[ -n "$PROJ" ]]; then
   # Dev usa .env (texto puro, local). `.env.dev` é o nome legado, ainda aceito.
   if [[ -f "$PROJ/.env" ]]; then
     ok ".env presente"
+    # ⚠️ APP_UID decide o dono do código (chown na subida) e dos processos do
+    #    PHP-FPM. Errado, a pessoa perde a escrita nos próprios arquivos depois
+    #    da primeira subida. Só dá para conferir com daemon local: no remoto, o
+    #    UID certo é o do usuário da VM, que daqui não se enxerga.
+    _uid="$(grep -E '^APP_UID=' "$PROJ/.env" | head -1 | cut -d= -f2- | sed 's/#.*//' | tr -d "\"' ")"
+    if [[ "${DAEMON_REMOTO:-false}" != true && -n "$_uid" && "$_uid" != "$(id -u)" ]]; then
+      warn ".env: APP_UID=${_uid}, mas o seu usuário é $(id -u)" \
+           "o código passaria a ser de outro usuário na subida. Ajuste: APP_UID=$(id -u) e APP_GID=$(id -g)"
+    fi
   elif [[ -f "$PROJ/.env.dev" ]]; then
     warn ".env.dev presente, .env ausente (nome legado)" "renomeie: mv .env.dev .env"
   else
