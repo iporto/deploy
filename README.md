@@ -186,6 +186,7 @@ EOF
 | `deploy-promote` | Promove uma imagem já construída para produção, com rollback por SHA |
 | `deploy-backup` | Baixa backup dos bancos do servidor, com retenção |
 | `envedit` | Edita envs criptografados com SOPS + age, encapsulando as flags que o formato exige |
+| `deploy-infra` | Sobe a infra de dev compartilhada (Traefik, MariaDB, Redis, Mailpit; MinIO e Meilisearch opcionais) e cria bancos e buckets |
 | `harden-vm` | Fecha a superfície de rede da VM: ufw, `DOCKER-USER`, fail2ban, SSH por chave |
 | `deploy-wizard` | Assistente interativo — guia a instalação do começo ao fim |
 | `deploy-doctor` | Verifica se a máquina consegue rodar o ambiente — rode **antes** de tudo |
@@ -327,9 +328,15 @@ Executado **localmente**. Usa `rsync` sobre SSH para copiar os arquivos do proje
 | Argumento | Arquivo lido |
 |-----------|-------------|
 | `prd` | `.env.prd` |
-| `dev` | `.env.dev` |
 | `stg` | `.env.stg` |
+| `dev` | `.env` — texto puro, local, nunca versionado |
 | *(omitido)* | `.env` |
+
+> O ambiente de desenvolvimento não tem arquivo próprio de propósito. `.env` é o
+> nome que o `docker compose` lê sozinho, o que a VM recebe e o que o
+> `deploy-run` carrega: uma fonte só, sem cópia intermediária para envelhecer.
+> Criptografar não acrescentaria nada — o arquivo nunca entra no git.
+> `.env.dev` continua sendo aceito, como legado.
 
 ### Opções
 
@@ -383,7 +390,7 @@ Executado **localmente**. Usa `rsync` sobre SSH para copiar os arquivos do proje
 3. Verifica/cria o diretório remoto
 4. Executa `rsync` com exclusões padrão e `--delete`
 5. Aplica `chown` no diretório remoto
-6. Copia `.env.AMBIENTE` → `.env` no servidor
+6. Entrega o env do ambiente → `.env` no servidor (decripta se estiver cifrado)
 7. Executa `./deploy-run` no servidor (se `SYNC_POST_RUN=true`)
 8. Encerra o socket SSH ao sair (trap em `EXIT`/`INT`/`TERM`)
 
@@ -445,6 +452,10 @@ Executado **localmente**. Lê o `servers.yml` do projeto e chama `deploy-sync` p
 
 ```yaml
 servers:
+  dev:
+    - name: main
+      label: VM de desenvolvimento
+      env_file: .env
   prd:
     - name: main
       label: VM Principal
@@ -476,8 +487,8 @@ Executado **localmente** (na sua máquina). Conecta ao servidor via SSH, detecta
 | Argumento | Arquivo lido |
 |-----------|-------------|
 | `prd` | `.env.prd` |
-| `dev` | `.env.dev` |
 | `stg` | `.env.stg` |
+| `dev` | `.env` |
 
 ### Destino do backup
 
@@ -617,7 +628,7 @@ o `sops` com as flags corretas.
 
 ```bash
 ./envedit                 # .env.prd — infra
-./envedit dev             # .env.dev
+./envedit dev             # aponta o .env — dev é texto puro, não é cifrado
 ./envedit api             # .envs/api.env.prd
 ./envedit api dev         # .envs/api.env.dev
 ./envedit --show api      # imprime decriptado no stdout
@@ -970,6 +981,33 @@ Trocar um pelo outro autentica com 200 e derruba todos os builds.
 ---
 
 ## `deploy-promote` — Liberar imagem em produção
+
+O script atende **dois modelos** e escolhe pelo que o projeto tem.
+
+### Modelo com homologação (Coolify + GHCR)
+
+Ativo quando o projeto tem `deploy-destinations.json`, `.github/workflows/promote.yml`
+e `.github/scripts/pipeline.sh`. O build publica só tags imutáveis (`vX.Y.Z`,
+`sha-`); o repositório de deploy move `:hml` a cada imagem publicada (deploy
+automático no node HML) e `:prd` **só por promoção** — levando o mesmo digest
+que foi testado em HML, sem rebuild.
+
+```bash
+./deploy-promote prd --status          # versão em :hml × :prd, por app
+./deploy-promote prd api               # promove o que está em :hml
+./deploy-promote prd api v0.43.1       # versão específica — é o rollback
+./deploy-promote prd api --check       # só informa
+./deploy-promote prd --all             # todas as apps
+```
+
+- Promove por **versão** (`vX.Y.Z`), não por `sha-`.
+- Build em andamento: espera o build **e** o deploy em HML antes de decidir o
+  que promover.
+- Quem executa de fato é o `promote.yml` do projeto (portão `vars.PROMOTERS`,
+  Environment `production`); o script dispara e acompanha o run.
+- As regras vêm do `pipeline.sh` **do projeto** — as mesmas do GitHub Actions.
+
+### Modelo compose + Watchtower
 
 Resolve o SHA a partir de `origin/main`, espera o build terminar se houver um em
 andamento, confere que a imagem existe no registry e só então promove a tag
