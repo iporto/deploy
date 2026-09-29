@@ -152,6 +152,63 @@ services:
       - shared
     restart: unless-stopped
 
+  # ─── Opcionais ─────────────────────────────────────────────────────────────
+  #
+  # Só sobem se listados em INFRA_EXTRAS, no .env.dev — o deploy-infra traduz a
+  # lista em --profile. Quem não precisa não paga memória por eles.
+  #
+  # ⚠️ As senhas daqui usam `:-` e não `:?`. O compose interpola o arquivo
+  #    INTEIRO, inclusive serviços de profile inativo: um `:?` obrigaria todo
+  #    dev a preencher a senha do MinIO mesmo sem usá-lo. Quem cobra o valor,
+  #    só para os extras ligados, é o deploy-infra.
+
+  # S3 local. O nome infra-s3 é o que os .env dos apps usam como endpoint.
+  minio:
+    image: minio/minio:latest
+    platform: ${INFRA_PLATFORM:-linux/amd64}
+    container_name: infra-s3
+    profiles: ["s3"]
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minio}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"             # API S3
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"     # console web
+    networks:
+      - shared
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  meilisearch:
+    image: getmeili/meilisearch:latest
+    platform: ${INFRA_PLATFORM:-linux/amd64}
+    container_name: infra-meilisearch
+    profiles: ["search"]
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-}
+      - MEILI_MAX_INDEXING_MEMORY=${MEILI_MAX_INDEXING_MEMORY:-512MiB}
+      - MEILI_LOG_LEVEL=WARN
+    volumes:
+      - meilisearch-data:/meili_data
+    ports:
+      - "127.0.0.1:${MEILI_PORT:-7700}:7700"
+    networks:
+      - shared
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
 networks:
   shared:
     name: shared
@@ -164,3 +221,5 @@ volumes:
   mysql-data:
   redis-data:
   mailpit-data:
+  minio-data:
+  meilisearch-data:
