@@ -65,6 +65,10 @@ services:
       - "--providers.docker.exposedbydefault=false"
       - "--entrypoints.web.address=:80"
       - "--api.dashboard=true"
+      # Sem isto a porta 8080 fica publicada, mas o dashboard e a API não são
+      # servidos nela (404). "insecure" = sem autenticação; aceitável só porque
+      # a porta está presa ao loopback, logo abaixo.
+      - "--api.insecure=true"
       - "--ping=true"
     ports:
       # A porta 80 pode já estar ocupada na máquina do dev — por isso é variável.
@@ -163,8 +167,15 @@ services:
   #    só para os extras ligados, é o deploy-infra.
 
   # S3 local. O nome infra-s3 é o que os .env dos apps usam como endpoint.
+  #
+  # ⚠️ NÃO voltar para minio/minio. A MinIO retirou a imagem da edição
+  #    comunitária do Docker Hub (404) e do quay.io: quem ainda a tem, tem só o
+  #    cache local, e a primeira máquina limpa falha no pull com "repository does
+  #    not exist". O pgsty/minio é um fork que publica o mesmo binário, com o
+  #    mesmo CLI, as mesmas variáveis e o `mc` embutido (o createbucket usa).
+  #    Tag fixa: no fork, `latest` anda sozinho.
   minio:
-    image: minio/minio:latest
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     platform: ${INFRA_PLATFORM:-linux/amd64}
     container_name: infra-s3
     profiles: ["s3"]
