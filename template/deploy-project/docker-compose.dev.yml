@@ -1,5 +1,11 @@
+# ⚠️ `platform:` é OBRIGATÓRIO nas imagens iporto99/*, mesmo sendo multi-arch.
+#    Sem ele o compose usa a arquitetura do CLIENTE, não a do daemon: `./deploy-run
+#    dev` num Mac arm64 contra uma VM x86 (contexto ssh://) sobe os containers em
+#    arm64 ("exec format error") e o pull traz as duas arquiteturas, dobrando o
+#    disco. Padrão amd64; Docker LOCAL em arm64 define APP_PLATFORM=linux/arm64.
 services:
   nginx:
+    platform: ${APP_PLATFORM:-linux/amd64}
     image: iporto99/nginx:latest
     container_name: ${APP_PROJECT_NAME}-nginx
     profiles:
@@ -49,6 +55,7 @@ services:
       start_period: 30s
 
   php:
+    platform: ${APP_PLATFORM:-linux/amd64}
     image: iporto99/php-8-3:1.5
     container_name: ${APP_PROJECT_NAME}-php
     profiles:
@@ -72,6 +79,7 @@ services:
     restart: unless-stopped
 
   php-api:
+    platform: ${APP_PLATFORM:-linux/amd64}
     image: iporto99/php-8-3:1.5
     container_name: ${APP_PROJECT_NAME}-php-api
     profiles:
@@ -90,6 +98,7 @@ services:
     command: sh -c "chown ${APP_UID:-1000}:${APP_GID:-1000} api.__DOMAIN__ -R && cd api.__DOMAIN__ && ./init-laravel.sh && tail -f /dev/null"
 
   php-console:
+    platform: ${APP_PLATFORM:-linux/amd64}
     image: iporto99/php-8-3:1.5
     container_name: ${APP_PROJECT_NAME}-php-console
     profiles:
@@ -125,6 +134,7 @@ services:
       start_period: 30s
 
   env-www:
+    platform: ${APP_PLATFORM:-linux/amd64}
     image: iporto99/php-8-3:1.5
     container_name: ${APP_PROJECT_NAME}-env-www
     # Fora do profile "development" de propósito: o www é opcional no kit.
@@ -152,6 +162,7 @@ services:
     command: sh -c "chown ${APP_UID:-1000}:${APP_GID:-1000} www.__DOMAIN__ -R && cd www.__DOMAIN__ && ./init-laravel.sh && npm run dev -- --host 0.0.0.0"
 
   env-platform:
+    platform: ${APP_PLATFORM:-linux/amd64}
     image: iporto99/php-8-3:1.5
     container_name: ${APP_PROJECT_NAME}-env-platform
     profiles:

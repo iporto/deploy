@@ -142,6 +142,18 @@ DB_PASSWORD=<gerada>
 
 ### 4.2 Tirar o `platform: linux/amd64` — **só das imagens `iporto99/*`**
 
+> ❌ **Revisado em 2026-09-29 — o pin VOLTOU, configurável.** Tirá-lo quebrou o
+> ambiente de quem roda `./deploy-run dev` num Mac arm64 contra uma VM x86 pelo
+> contexto `ssh://`: sem `platform:`, o compose escolhe a arquitetura do
+> **cliente**, não a do daemon. Os containers subiram em arm64 e morreram com
+> `exec format error`, e o pull trouxe as duas arquiteturas, dobrando o espaço
+> das imagens até encher o disco da VM. O teste que validou a remoção rodava o
+> compose na própria máquina x86, onde cliente e daemon coincidem.
+>
+> Hoje: `platform: ${APP_PLATFORM:-linux/amd64}` nas imagens `iporto99/*`. Quem
+> roda Docker **local** em arm64 define `APP_PLATFORM=linux/arm64` e roda nativo.
+> O texto abaixo fica como registro da decisão original.
+
 > 📌 **Nota de arquitetura.** O pin nas imagens de terceiros exige emulação em host arm64.
 > Num Mac (Docker Desktop / OrbStack) existe a camada e funciona, mais lento. Numa **VM Linux
 > arm64 sem qemu/binfmt**, o container **não sobe**. A VM de teste é x86_64 (mesma máquina do
