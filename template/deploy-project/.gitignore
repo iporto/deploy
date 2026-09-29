@@ -11,7 +11,8 @@
 /code/*
 
 # ─── Ambiente ────────────────────────────────────────────────────────────────
-# Env em texto puro NUNCA é versionado:
+# Env em texto puro NUNCA é versionado. O .env é o env de DESENVOLVIMENTO —
+# valores reais, locais de cada dev. O template versionado é o .env.example.
 .env
 **/.env
 .envs/*.env
@@ -39,6 +40,5 @@
 # backups-legacy/, backup-2026/ e qualquer aninhamento dentro deles.
 **/backup*/
 
-# Env de desenvolvimento: valores reais, locais de cada dev.
-# O template versionado é o .env.dev.example — copie e preencha.
+# Nome legado do env de desenvolvimento, antes de ele virar o .env.
 .env.dev
