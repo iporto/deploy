@@ -35,6 +35,7 @@ Um punhado de scripts que você lê em uma tarde e um `.env` por ambiente.
 - [A esteira de produção](docs/production-pipeline.md) — do push à imagem no ar, e o GitHub App
 - [Onde isso roda](docs/deployment-targets.md) — VM própria, Coolify ou só a imagem: a escolha do destino
 - [Coolify do zero](docs/coolify-setup.md) — o runbook completo, painel e API lado a lado
+- [Dimensionar no Coolify](docs/coolify-performance.md) — memória, CPU e as envs de PHP de uma app já publicada
 - [Aviso](#aviso) — leia antes de rodar em algo que te importa
 - [Como atualizar os scripts](#como-atualizar-os-scripts)
 - [Documentação](#documentação) · [Licença](#licença)
@@ -1062,6 +1063,7 @@ Não há registry, organização nem nome de projeto escritos no script.
 | [`docs/production-pipeline.md`](docs/production-pipeline.md) | **Como o código vira imagem e chega ao ar.** O build centralizado, as três tags, o GitHub App que liga os dois repositórios — com o passo a passo de criação — e a tabela de sintomas de quando falha. |
 | [`docs/deployment-targets.md`](docs/deployment-targets.md) | **Onde a imagem vai parar.** A esteira termina no registry; daí em diante são três trilhas — VM própria com os verbos, Coolify, ou só a imagem publicada e o destino é problema seu. Diz o que um destino precisa saber fazer, e como trocar de trilha depois. |
 | [`docs/coolify-setup.md`](docs/coolify-setup.md) | **Do zero ao primeiro deploy no Coolify.** Cada passo no painel **e** por API, o mapa dos cinco uuid que se confundem, e de onde sai o `coolify_uuid` que vai no `build.<app>.yml`, e por que a criação **não** virou verbo. Escrito para quem nunca abriu o painel. |
+| [`docs/coolify-performance.md`](docs/coolify-performance.md) | **Quanto dar a uma app, e o que ajustar quando apertar.** Começa onde o setup termina. O `pm.max_children` se calcula sozinho a partir do limite de memória do container, então o ajuste que importa é esse limite no painel — não uma env. Traz a tabela completa das `PHP_*` e `FPM_*` com os defaults reais da imagem, o método para dimensionar memória e CPU, o *stop grace period* por papel, e os dois sintomas que enganam: pool cheio com CPU ociosa, e worker morto por OOM sem o container reiniciar. |
 | [`docs/use-cases.md`](docs/use-cases.md) | **Sete cenários com os comandos na ordem.** Projeto seu sem o kit, SaaS a partir do kit, segundo produto na mesma máquina, entrar num projeto que já existe, desenvolver contra uma VM. Comece por aqui se souber o que quer fazer mas não por onde. |
 | [`docs/development-environment.md`](docs/development-environment.md) | O registro das decisões: por que o `deploy-run dev` usa o contexto Docker e o `prd` não, e os doze defeitos que só apareceram rodando o fluxo numa máquina limpa. |
 | [Starter Kit](https://github.com/Codijo/starter-kit.spelt.com.br) | Um SaaS em Laravel que sobe com esta biblioteca — o consumidor de referência dela. Bom lugar para ver os scripts em uso real. |
