@@ -87,7 +87,7 @@ if [[ -f deploy-destinations.json && -f .github/workflows/promote.yml && -f .git
     print_error "neste projeto só se promove para prd — HML recebe cada imagem publicada sozinho"; exit 1; }
   command -v jq >/dev/null 2>&1 || { print_error "jq não encontrado (brew install jq)"; exit 1; }
 
-  VERSAO="$VERSION_ARG"
+  VERSION="$VERSION_ARG"
   [[ "$SHA_ARG" == sha-* ]] && { print_error "neste projeto promova por versão (vX.Y.Z), não por sha-"; exit 1; }
 
   DEPLOY_REPO="$(git remote get-url origin 2>/dev/null | sed -E 's#^.*github\.com[:/]##; s#\.git$##')"
@@ -98,10 +98,10 @@ if [[ -f deploy-destinations.json && -f .github/workflows/promote.yml && -f .git
   source .github/scripts/pipeline.sh
 
   # O pipeline.sh fala a língua do Actions (::error::). Aqui, a do terminal.
-  _limpa() { sed -E 's/^::error::/[ERRO] /'; }
+  _clean() { sed -E 's/^::error::/[ERRO] /'; }
 
   # api | api.projeto.com.br → nome completo como está no mapa.
-  _app_completa() {
+  _full_app() {
     local a
     for a in $(apps_known); do
       [[ "$1" == "$a" || "$1" == "${a%%.*}" ]] && { echo "$a"; return 0; }
@@ -109,7 +109,7 @@ if [[ -f deploy-destinations.json && -f .github/workflows/promote.yml && -f .git
     return 1
   }
 
-  _build_em_andamento() {
+  _build_in_progress() {
     gh run list -R "$(repo_of "$1")" --workflow=build.yml --limit 5 \
       --json status,databaseId --jq '.[] | select(.status != "completed") | .databaseId' 2>/dev/null | head -1 || true
   }
@@ -117,29 +117,29 @@ if [[ -f deploy-destinations.json && -f .github/workflows/promote.yml && -f .git
   hml_status() {
     printf "  %-20s %-10s %-10s %-10s %s\n" APP ":hml" ":prd" "build" "situação"
     printf "  %-20s %-10s %-10s %-10s %s\n" "────────────────────" "──────────" "──────────" "──────────" "────────"
-    local app h p b sit
+    local app h p b state
     for app in $(apps_known); do
       # `|| true`: com set -e, uma falha aqui mataria o script e a mensagem sumiria.
-      h=$(version_at "$app" hml 2>&1 | _limpa || true); p=$(version_at "$app" prd 2>&1 | _limpa || true)
+      h=$(version_at "$app" hml 2>&1 | _clean || true); p=$(version_at "$app" prd 2>&1 | _clean || true)
       [[ "$h$p" == *"[ERRO]"* ]] && { echo "$h $p" | grep -m1 ERRO >&2; return 1; }
       b=$(gh run list -R "$(repo_of "$app")" --workflow=build.yml --limit 1 --json status --jq '.[0].status' 2>/dev/null || echo '?')
-      if   is_legacy "$app";                        then sit="↪  sem HML — cada build vai direto a prd"
-      elif [[ -z "$(destinations_of "$app" prd)" ]]; then sit="⛔ sem destino prd no mapa"
-      elif [[ -z "$h" ]];                             then sit="⚠️  nada em :hml"
-      elif [[ "$h" == "$p" ]];                        then sit="✅ em dia"
-      elif [[ "$b" != "completed" ]];                 then sit="⏳ buildando"
-      else                                                 sit="🔸 pronto para promover"
+      if   is_legacy "$app";                        then state="↪  sem HML — cada build vai direto a prd"
+      elif [[ -z "$(destinations_of "$app" prd)" ]]; then state="⛔ sem destino prd no mapa"
+      elif [[ -z "$h" ]];                             then state="⚠️  nada em :hml"
+      elif [[ "$h" == "$p" ]];                        then state="✅ em dia"
+      elif [[ "$b" != "completed" ]];                 then state="⏳ buildando"
+      else                                                 state="🔸 pronto para promover"
       fi
       # "-" e não "—": o printf alinha por byte, e o travessão tem três.
-      printf "  %-20s %-10s %-10s %-10s %s\n" "${app%%.*}" "${h:--}" "${p:--}" "$b" "$sit"
+      printf "  %-20s %-10s %-10s %-10s %s\n" "${app%%.*}" "${h:--}" "${p:--}" "$b" "$state"
     done
   }
 
-  hml_promover() {
+  hml_promote() {
     local app="$1" v="${2:-}" p id rid
     if is_legacy "$app"; then
       print_error "[${app%%.*}] sem HML no mapa — cada build já vai direto a produção; não há o que promover"
-      print_error "        Rollback: gh workflow run deploy.yml -R ${DEPLOY_REPO} -f app=${app} -f ambiente=prd -f versao=vX.Y.Z"
+      print_error "        Rollback: gh workflow run deploy.yml -R ${DEPLOY_REPO} -f app=${app} -f environment=prd -f version=vX.Y.Z"
       return 1
     fi
     if [[ -z "$(destinations_of "$app" prd)" ]]; then
@@ -151,7 +151,7 @@ if [[ -f deploy-destinations.json && -f .github/workflows/promote.yml && -f .git
     fi
 
     # Build em curso: a versão em :hml ainda vai mudar — espera antes de decidir.
-    id="$(_build_em_andamento "$app")"
+    id="$(_build_in_progress "$app")"
     if [[ -n "$id" && -z "$v" ]]; then
       [[ "$CHECK_ONLY" == true ]] && { print_warning "[${app%%.*}] build em andamento (run $id) — :hml ainda vai mudar"; return 0; }
       print_info "[${app%%.*}] build em andamento, aguardando o :hml..."
@@ -171,18 +171,18 @@ if [[ -f deploy-destinations.json && -f .github/workflows/promote.yml && -f .git
     fi
 
     if [[ -z "$v" ]]; then
-      v=$(version_at "$app" hml 2>&1 | _limpa || true)
+      v=$(version_at "$app" hml 2>&1 | _clean || true)
       [[ "$v" == *"[ERRO]"* ]] && { echo "$v" >&2; return 1; }
       [[ -n "$v" ]] || { print_error "[${app%%.*}] não há versão em :hml"; return 1; }
     fi
-    p=$(version_at "$app" prd 2>&1 | _limpa || true)
+    p=$(version_at "$app" prd 2>&1 | _clean || true)
     [[ "$p" == *"[ERRO]"* ]] && { echo "$p" >&2; return 1; }
 
     print_step "[${app%%.*}] ${p:-—} → ${v}"
     if [[ "$v" == "$p" ]]; then print_success "[${app%%.*}] já está em produção — nada a fazer"; return 0; fi
     [[ "$CHECK_ONLY" == true ]] && { print_warning "[${app%%.*}] pronto para promover: ${v}"; return 0; }
 
-    gh workflow run promote.yml -R "$DEPLOY_REPO" -f app="$app" -f versao="$v" >/dev/null || {
+    gh workflow run promote.yml -R "$DEPLOY_REPO" -f app="$app" -f version="$v" >/dev/null || {
       print_error "[${app%%.*}] não consegui disparar o promote.yml"; return 1; }
     sleep 4
     rid=$(gh run list -R "$DEPLOY_REPO" --workflow=promote.yml --limit 1 --json databaseId --jq '.[0].databaseId')
@@ -199,14 +199,14 @@ if [[ -f deploy-destinations.json && -f .github/workflows/promote.yml && -f .git
   if [[ "$STATUS" == true ]]; then hml_status; exit $?; fi
 
   if [[ "$ALL" == true ]]; then
-    falhas=0
-    for a in $(apps_known); do hml_promover "$a" || falhas=$((falhas + 1)); echo; done
-    [[ "$falhas" -eq 0 ]]; exit $?
+    failures=0
+    for a in $(apps_known); do hml_promote "$a" || failures=$((failures + 1)); echo; done
+    [[ "$failures" -eq 0 ]]; exit $?
   fi
 
   [[ -n "$APP" ]] || { print_error "informe a app. Ex.: ./deploy-promote prd api"; exit 1; }
-  APP_FULL="$(_app_completa "$APP")" || { print_error "app desconhecida: $APP"; apps_known | sed 's/^/  - /'; exit 1; }
-  hml_promover "$APP_FULL" "$VERSAO"
+  APP_FULL="$(_full_app "$APP")" || { print_error "app desconhecida: $APP"; apps_known | sed 's/^/  - /'; exit 1; }
+  hml_promote "$APP_FULL" "$VERSION"
   exit $?
 fi
 
@@ -220,11 +220,11 @@ COMPOSE="docker-compose.${ENV_TARGET}.yml"
 # ⚠️ Todo helper aqui precisa sair com 0 mesmo sem encontrar nada. Com
 #    `set -euo pipefail`, um grep vazio ou um inspect em tag inexistente mata o
 #    script SEM MENSAGEM — foi o que aconteceu ao promover com build em curso.
-_imagem_do_app() {
+_app_image() {
   grep -oE "image: [^ ]+/[a-z0-9._-]*${1}:prd" "$COMPOSE" 2>/dev/null | head -1 | sed 's/^image: //' || true
 }
 
-_dir_do_app() {
+_app_dir() {
   local d
   for d in code/"${1}".*; do
     [[ -d "$d/.git" ]] && { echo "$d"; return 0; }
@@ -234,28 +234,28 @@ _dir_do_app() {
 
 # Serviços do compose que rodam a imagem deste app. Derivado, não fixo: a API
 # roda em três (php, command, supervisor) e os frontends em um só.
-_servicos_do_app() {
+_app_services() {
   python3 - "$COMPOSE" "$1" <<'PY_SVC'
 import sys, re
-texto = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+text = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
 app = sys.argv[2]
-atual, corpo, saida = None, [], []
-for l in texto.splitlines():
+current, body, output = None, [], []
+for l in text.splitlines():
     m = re.match(r'^  ([a-z0-9_-]+):$', l)
     if m or l.startswith('volumes:') or l.startswith('networks:'):
-        if atual and any(re.search(rf'image:.*-{re.escape(app)}:prd', c) for c in corpo):
-            saida.append(atual)
-        atual = m.group(1) if m else None
-        corpo = []
-    elif atual:
-        corpo.append(l)
-if atual and any(re.search(rf'image:.*-{re.escape(app)}:prd', c) for c in corpo):
-    saida.append(atual)
-print(' '.join(saida))
+        if current and any(re.search(rf'image:.*-{re.escape(app)}:prd', c) for c in body):
+            output.append(current)
+        current = m.group(1) if m else None
+        body = []
+    elif current:
+        body.append(l)
+if current and any(re.search(rf'image:.*-{re.escape(app)}:prd', c) for c in body):
+    output.append(current)
+print(' '.join(output))
 PY_SVC
 }
 
-_apps_do_compose() {
+_compose_apps() {
   grep -oE "image: [^ ]+/[a-z0-9._-]+-([a-z0-9]+):prd" "$COMPOSE" 2>/dev/null \
     | sed -E 's/.*-([a-z0-9]+):prd$/\1/' | sort -u || true
 }
@@ -266,27 +266,27 @@ _apps_do_compose() {
 # ⚠️ Distinguir "não existe" de "não posso ver" é obrigatório aqui. Com o stderr
 #    jogado fora, um login expirado no registry vira "a tag não existe" — e a
 #    mensagem manda investigar um build que rodou e passou. Já aconteceu.
-readonly AUTH_SENTINELA='__sem-acesso-ao-registry__'
+readonly AUTH_SENTINEL='__sem-acesso-ao-registry__'
 
 _digest() {
-  local saida
+  local output
   # Sem o `|| { ... }`, uma tag inexistente derruba o script inteiro.
-  saida=$(docker buildx imagetools inspect "$1" 2>&1) || {
-    case "$saida" in
+  output=$(docker buildx imagetools inspect "$1" 2>&1) || {
+    case "$output" in
       *"failed to authorize"*|*401*|*403*|*denied*|*nauthorized*)
-        printf '%s\n' "$AUTH_SENTINELA" ;;
+        printf '%s\n' "$AUTH_SENTINEL" ;;
     esac
     return 0
   }
-  printf '%s\n' "$saida" | awk '/^Digest:/{print $2; exit}' || true
+  printf '%s\n' "$output" | awk '/^Digest:/{print $2; exit}' || true
 }
 
 # O `_digest` roda em substituição de comando — subshell não consegue abortar o
 # script. Por isso devolve a sentinela e quem chama confere.
-_guarda_auth() {
+_auth_guard() {
   local d
   for d in "$@"; do
-    [[ "$d" == "$AUTH_SENTINELA" ]] || continue
+    [[ "$d" == "$AUTH_SENTINEL" ]] || continue
     print_error "sem acesso de leitura ao registry — não dá para saber o que existe lá"
     print_error "        Isto NÃO significa que a tag não existe."
     print_error "        Refaça o login (o token do \`docker login\` é o mesmo PAT que você rotaciona):"
@@ -296,67 +296,67 @@ _guarda_auth() {
   return 0
 }
 
-_sha_de_origin_main() {
-  local dir; dir="$(_dir_do_app "$1")" || return 1
+_sha_from_origin_main() {
+  local dir; dir="$(_app_dir "$1")" || return 1
   # ⚠️ Um cd só: o segundo `cd "$dir"` seria relativo ao diretório já trocado.
   ( cd "$dir" && { git fetch -q origin 2>/dev/null || true; git rev-parse --short origin/main 2>/dev/null; } ) || true
 }
 
-_build_em_andamento() {
+_build_in_progress() {
   gh run list --workflow="gh-deploy.${1}.PRD.yml" --limit 5 \
     --json status,databaseId --jq '.[] | select(.status != "completed") | .databaseId' 2>/dev/null | head -1 || true
 }
 
 # ─── Quadro geral ─────────────────────────────────────────────────────────────
 
-mostrar_status() {
+show_status() {
   printf "  %-12s %-10s %-10s %-12s %s\n" APP "origin/main" "em :prd" "build" "situação"
   printf "  %-12s %-10s %-10s %-12s %s\n" "────────────" "──────────" "──────────" "────────────" "────────"
-  local app img sha atual alvo st
-  for app in $(_apps_do_compose); do
-    img="$(_imagem_do_app "$app")"
-    sha="$(_sha_de_origin_main "$app" || echo '?')"
-    atual="$(_digest "$img")"
-    alvo="$(_digest "${img%:prd}:sha-${sha}")"
-    _guarda_auth "$atual" "$alvo" || return 1
+  local app img sha current target st
+  for app in $(_compose_apps); do
+    img="$(_app_image "$app")"
+    sha="$(_sha_from_origin_main "$app" || echo '?')"
+    current="$(_digest "$img")"
+    target="$(_digest "${img%:prd}:sha-${sha}")"
+    _auth_guard "$current" "$target" || return 1
     st="$(gh run list --workflow="gh-deploy.${app}.PRD.yml" --limit 1 --json status --jq '.[0].status' 2>/dev/null || echo '?')"
-    local sit
-    if [[ -n "$atual" && "$atual" == "$alvo" ]]; then sit="✅ em dia"
-    elif [[ "$st" != "completed" ]];              then sit="⏳ buildando"
-    elif [[ -z "$alvo" ]];                        then sit="⚠️  sem imagem para esse commit"
-    else                                               sit="🔸 pronto para promover"
+    local state
+    if [[ -n "$current" && "$current" == "$target" ]]; then state="✅ em dia"
+    elif [[ "$st" != "completed" ]];              then state="⏳ buildando"
+    elif [[ -z "$target" ]];                        then state="⚠️  sem imagem para esse commit"
+    else                                               state="🔸 pronto para promover"
     fi
-    printf "  %-12s %-10s %-10s %-12s %s\n" "$app" "$sha" "${atual:7:8}" "$st" "$sit"
+    printf "  %-12s %-10s %-10s %-12s %s\n" "$app" "$sha" "${current:7:8}" "$st" "$state"
   done
 }
 
 # ─── Promoção ─────────────────────────────────────────────────────────────────
 
-promover_app() {
-  local app="$1" sha="${2:-}" img atual alvo
+promote_app() {
+  local app="$1" sha="${2:-}" img current target
 
-  img="$(_imagem_do_app "$app")"
+  img="$(_app_image "$app")"
   [[ -n "$img" ]] || { print_error "[$app] imagem não encontrada em $COMPOSE"; return 1; }
 
   if [[ -z "$sha" ]]; then
     # ⚠️ origin/main, não HEAD: trabalhando via PR o clone local fica atrás, e o
     #    build sai sempre de main.
-    sha="sha-$(_sha_de_origin_main "$app")" || {
+    sha="sha-$(_sha_from_origin_main "$app")" || {
       print_error "[$app] repo de código não encontrado em code/"; return 1; }
   fi
 
   print_step "[$app] alvo: ${sha}"
 
-  atual="$(_digest "$img")"
-  alvo="$(_digest "${img%:prd}:${sha}")"
-  _guarda_auth "$atual" "$alvo" || return 1
+  current="$(_digest "$img")"
+  target="$(_digest "${img%:prd}:${sha}")"
+  _auth_guard "$current" "$target" || return 1
 
-  if [[ -n "$alvo" && "$atual" == "$alvo" ]]; then
+  if [[ -n "$target" && "$current" == "$target" ]]; then
     print_success "[$app] já está em produção — nada a fazer"
     return 0
   fi
 
-  local id; id="$(_build_em_andamento "$app")"
+  local id; id="$(_build_in_progress "$app")"
   if [[ -n "$id" ]]; then
     if [[ "$CHECK_ONLY" == true ]]; then
       print_warning "[$app] build em andamento (run $id) — promover agora falharia"
@@ -369,11 +369,11 @@ promover_app() {
       return 1
     fi
     print_success "[$app] build concluído"
-    alvo="$(_digest "${img%:prd}:${sha}")"
-    _guarda_auth "$alvo" || return 1
+    target="$(_digest "${img%:prd}:${sha}")"
+    _auth_guard "$target" || return 1
   fi
 
-  if [[ -z "$alvo" ]]; then
+  if [[ -z "$target" ]]; then
     print_error "[$app] a tag ${sha} não existe em ${img%:prd}"
     print_error "        O build desse commit não rodou ou falhou."
     print_error "        gh run list --workflow=gh-deploy.${app}.PRD.yml --limit 3"
@@ -382,7 +382,7 @@ promover_app() {
 
   if [[ "$CHECK_ONLY" == true ]]; then
     print_warning "[$app] pronto para promover: ${sha}"
-    print_info "        em produção agora: ${atual:0:19}…"
+    print_info "        em produção agora: ${current:0:19}…"
     return 0
   fi
 
@@ -406,7 +406,7 @@ promover_app() {
     return 1
   fi
 
-  local svcs; svcs="$(_servicos_do_app "$app")"
+  local svcs; svcs="$(_app_services "$app")"
   if [[ -z "$svcs" ]]; then
     print_error "[$app] não achei serviço no compose usando essa imagem"
     return 1
@@ -424,17 +424,17 @@ promover_app() {
 
 # ─── Principal ────────────────────────────────────────────────────────────────
 
-if [[ "$STATUS" == true ]]; then mostrar_status; exit 0; fi
+if [[ "$STATUS" == true ]]; then show_status; exit 0; fi
 
 if [[ "$ALL" == true ]]; then
-  falhas=0
-  for a in $(_apps_do_compose); do
-    promover_app "$a" || falhas=$(( falhas + 1 ))
+  failures=0
+  for a in $(_compose_apps); do
+    promote_app "$a" || failures=$(( failures + 1 ))
     echo
   done
-  [[ "$falhas" -gt 0 ]] && exit 1
+  [[ "$failures" -gt 0 ]] && exit 1
   exit 0
 fi
 
 [[ -n "$APP" ]] || { print_error "informe o app. Ex.: ./deploy-promote ${ENV_TARGET} api"; exit 1; }
-promover_app "$APP" "$SHA_ARG"
+promote_app "$APP" "$SHA_ARG"
