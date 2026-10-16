@@ -109,7 +109,11 @@ jobs:
             VERSION="$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo 'v0.0.0')"
           fi
           echo "version=${VERSION}"                        >> "$GITHUB_OUTPUT"
-          echo "short_sha=$(git rev-parse --short HEAD)"    >> "$GITHUB_OUTPUT"
+          # 7 caracteres FIXOS, cortados do SHA completo — nunca `git rev-parse --short`. O Git alonga a
+          # abreviação quando o repositório cresce ou quando 7 ficam ambíguos: em 2026-10-16 o CI publicou
+          # `sha-47041449` (8) e o deploy-promote, no clone local, procurou `sha-4704144` (7). `--short=7`
+          # não resolve — ainda é um MÍNIMO. O deploy-promote corta igual (_sha_from_origin_main).
+          echo "short_sha=$(git rev-parse HEAD | cut -c1-7)" >> "$GITHUB_OUTPUT"
 
       - name: Nome da imagem
         id: img

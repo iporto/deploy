@@ -299,7 +299,10 @@ _auth_guard() {
 _sha_from_origin_main() {
   local dir; dir="$(_app_dir "$1")" || return 1
   # ⚠️ Um cd só: o segundo `cd "$dir"` seria relativo ao diretório já trocado.
-  ( cd "$dir" && { git fetch -q origin 2>/dev/null || true; git rev-parse --short origin/main 2>/dev/null; } ) || true
+  # 7 caracteres FIXOS, cortados do SHA completo — o mesmo corte do _build-image.yml dos projetos.
+  # `git rev-parse --short` tem tamanho variável (cresce com o repositório e com ambiguidade): em
+  # 2026-10-16 o CI publicou sha-47041449 e este script procurou sha-4704144. `--short=7` é só mínimo.
+  ( cd "$dir" && { git fetch -q origin 2>/dev/null || true; git rev-parse origin/main 2>/dev/null | cut -c1-7; } ) || true
 }
 
 _build_in_progress() {
