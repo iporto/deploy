@@ -57,6 +57,8 @@ SCRIPTS_DIR="$(_scripts_dir)"
 EXCLUDE_PATTERNS=(
   "code/"
   "Www/"
+  # Anotações privadas do responsável técnico (tokens, chaves): nunca saem do Mac.
+  ".secret/"
   ".git/"
   ".vscode/"
   ".idea/"

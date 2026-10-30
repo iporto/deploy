@@ -111,3 +111,7 @@ vendor/
 #    copiaria o próprio shim.
 deploy-run
 .deploy/
+
+# ─── Anotações privadas ──────────────────────────────────────────────────────
+# Pasta do responsável técnico (tokens, chaves): nunca sai do Mac.
+.secret/

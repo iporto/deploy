@@ -42,3 +42,6 @@
 
 # Nome legado do env de desenvolvimento, antes de ele virar o .env.
 .env.dev
+
+# Anotações privadas do responsável técnico: nunca entram no git, na imagem nem no rsync.
+.secret/
