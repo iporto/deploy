@@ -91,6 +91,7 @@ EXCLUDE_PATTERNS=(
   "deploy"
   "deploy-audit"
   "deploy-backup"
+  "deploy-mutagen"
   "deploy-promote"
   "deploy-readme.md"
   "deploy-run"
